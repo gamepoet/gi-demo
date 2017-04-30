@@ -11,6 +11,8 @@ import OpenGL.GL3
 
 class AppOpenGLView: NSOpenGLView {
   required init?(coder: NSCoder) {
+    lastTime = Float(CACurrentMediaTime())
+
     super.init(coder: coder)
 
     let attrs: [NSOpenGLPixelFormatAttribute] = [
@@ -49,6 +51,8 @@ class AppOpenGLView: NSOpenGLView {
       return kCVReturnSuccess
     }
 
+    lastTime = Float(CACurrentMediaTime())
+
     CVDisplayLinkCreateWithActiveCGDisplays(&displayLink)
     CVDisplayLinkSetOutputCallback(
       displayLink!,
@@ -68,13 +72,16 @@ class AppOpenGLView: NSOpenGLView {
     CGLLockContext(context.cglContextObj!)
     context.makeCurrentContext()
 
-    let colorVal = Float(sin(CACurrentMediaTime()))
-    glClearColor(colorVal, colorVal, colorVal, 0.0)
-    glClear(GLbitfield(GL_COLOR_BUFFER_BIT))
+    let now = Float(CACurrentMediaTime())
+    let dt = now - lastTime;
+    lastTime = now;
+
+    app_render(dt)
 
     CGLFlushDrawable(context.cglContextObj!)
     CGLUnlockContext(context.cglContextObj!)
   }
 
+  private var lastTime: Float
   private var displayLink: CVDisplayLink?
 }
