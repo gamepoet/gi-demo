@@ -36,6 +36,11 @@ class AppOpenGLView: NSOpenGLView {
     CVDisplayLinkStop(displayLink!)
   }
 
+  // enable view to accept key events
+  override var acceptsFirstResponder: Bool {
+    return true;
+  }
+
   override func prepareOpenGL() {
     super.prepareOpenGL()
 

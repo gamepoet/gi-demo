@@ -5,21 +5,42 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include "app.h"
+#include <stdarg.h>
 #include "vendor/tinyobjloader/tiny_obj_loader.h"
+#include <vectorial/vectorial.h>
+#include "app.h"
+
+#define GL_CHECK_ENABLED 1
+
+#if GL_CHECK_ENABLED
+    #define GL_CHECK(expr) do { (expr); GLenum err = glGetError(); if (err != GL_NO_ERROR) { report_error("GL expr failed. expr=`%s` code=%04xh msg=%s\n", #expr, err, get_gl_error_description(err)); } } while (false)
+#else
+    #define GL_CHECK(expr) (expr)
+#endif
 
 struct Model {
+  vectorial::mat4f transform;
   GLuint ib;
   GLuint vb;
   int tri_count;
 };
 
+struct Camera {
+  vectorial::vec3f pos;
+  float pitch;
+  float yaw;
+  vectorial::mat4f projection;
+};
+
 static bool s_first_draw = true;
 static float s_time = 0.0f;
 static std::vector<Model> s_models;
+static Camera s_camera;
 
 static GLuint s_default_vao;
 static GLuint s_program;
+
+static bool s_keyStatus[APP_KEY_CODE_COUNT];
 
 struct Vec3 {
   float x;
@@ -31,6 +52,28 @@ struct Vertex {
   Vec3 p;
   Vec3 n;
 };
+
+static void report_error(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    vprintf(format, args);
+    va_end(args);
+}
+
+static const char* get_gl_error_description(GLint err) {
+    switch (err) {
+        case GL_INVALID_ENUM:
+            return "invalid enum";
+        case GL_INVALID_VALUE:
+            return "invalid value";
+        case GL_INVALID_OPERATION:
+            return "invalid operation";
+        case GL_OUT_OF_MEMORY:
+            return "out of memory";
+        default:
+            return "unknown error code";
+    }
+}
 
 static void vec_sub(Vec3* out, const Vec3& a, const Vec3& b) {
   out->x = a.x - b.x;
@@ -74,12 +117,7 @@ static void normal_from_face(Vec3* out, const Vec3& p0, const Vec3& p1, const Ve
   vec_norm(out, cross);
 }
 
-static void load_models() {
-  char * dir = getcwd(NULL, 0);
-  std::cout << "Current dir: " << dir << std::endl;
-
-  const char* filename = "gi-demo.app/Contents/Resources/cornell_box.obj";
-  const char* mtl_dirname = "gi-demo.app/Contents/Resources/";
+static void load_model(const char* filename, const char* mtl_dirname) {
   tinyobj::attrib_t attrib;
   std::vector<tinyobj::shape_t> shapes;
   std::vector<tinyobj::material_t> materials;
@@ -153,25 +191,37 @@ static void load_models() {
   }
 
   // create the index buffer
-  glGenBuffers(1, &model.ib);
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, model.ib);
-  glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(uint16_t), &indices[0], GL_STATIC_DRAW);
+  GL_CHECK(glGenBuffers(1, &model.ib));
+  GL_CHECK(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, model.ib));
+  GL_CHECK(glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(uint16_t), &indices[0], GL_STATIC_DRAW));
 
-  glGenBuffers(1, &model.vb);
-  glBindBuffer(GL_ARRAY_BUFFER, model.vb);
-  glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), &vertices[0], GL_STATIC_DRAW);
+  GL_CHECK(glGenBuffers(1, &model.vb));
+  GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, model.vb));
+  GL_CHECK(glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), &vertices[0], GL_STATIC_DRAW));
 
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-  glBindBuffer(GL_ARRAY_BUFFER, 0);
+  GL_CHECK(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
+  GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, 0));
 
   // finish up the model and save it
   model.tri_count = indices.size() / 3;
+  model.transform = vectorial::mat4f::identity();
   s_models.push_back(model);
 }
 
+static void load_models() {
+//  char * dir = getcwd(NULL, 0);
+//  std::cout << "Current dir: " << dir << std::endl;
+
+  const char* mtl_dirname = "gi-demo.app/Contents/Resources/";
+  load_model("gi-demo.app/Contents/Resources/floor.obj", mtl_dirname);
+//  load_model("gi-demo.app/Contents/Resources/cornell_box.obj", mtl_dirname);
+}
+
 static void load_shaders() {
-  GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
-  GLuint fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
+  GLuint vertex_shader;
+  GLuint fragment_shader;
+  GL_CHECK(vertex_shader = glCreateShader(GL_VERTEX_SHADER));
+  GL_CHECK(fragment_shader = glCreateShader(GL_FRAGMENT_SHADER));
 
 //  std::string vertex_code;
 //  std::string fragment_code;
@@ -181,9 +231,9 @@ static void load_shaders() {
   const char* vertex_code =
     "#version 330 core\n"
     "layout(location = 0) in vec3 position;\n"
+    "uniform mat4 world_view_proj;\n"
     "void main() {\n"
-    "  gl_Position.xyz = position;\n"
-    "  gl_Position.w = 1.0;\n"
+    "  gl_Position = world_view_proj * vec4(position, 1.0);\n"
     "}\n"
   ;
   const char* fragment_code =
@@ -198,53 +248,89 @@ static void load_shaders() {
   int info_log_length;
 
   // compile
-  glShaderSource(vertex_shader, 1, &vertex_code, nullptr);
-  glCompileShader(vertex_shader);
-  glGetShaderiv(vertex_shader, GL_COMPILE_STATUS, &result);
-  glGetShaderiv(vertex_shader, GL_INFO_LOG_LENGTH, &info_log_length);
+  GL_CHECK(glShaderSource(vertex_shader, 1, &vertex_code, nullptr));
+  GL_CHECK(glCompileShader(vertex_shader));
+  GL_CHECK(glGetShaderiv(vertex_shader, GL_COMPILE_STATUS, &result));
+  GL_CHECK(glGetShaderiv(vertex_shader, GL_INFO_LOG_LENGTH, &info_log_length));
   if (info_log_length > 0) {
     std::string err_msg(info_log_length, '\0');
-    glGetShaderInfoLog(vertex_shader, info_log_length, nullptr, &err_msg[0]);
+    GL_CHECK(glGetShaderInfoLog(vertex_shader, info_log_length, nullptr, &err_msg[0]));
     std::cerr << "VERTEX SHADER ERROR: " << err_msg << std::endl;
   }
 
-  glShaderSource(fragment_shader, 1, &fragment_code, nullptr);
-  glCompileShader(fragment_shader);
-  glGetShaderiv(fragment_shader, GL_COMPILE_STATUS, &result);
-  glGetShaderiv(fragment_shader, GL_INFO_LOG_LENGTH, &info_log_length);
+  GL_CHECK(glShaderSource(fragment_shader, 1, &fragment_code, nullptr));
+  GL_CHECK(glCompileShader(fragment_shader));
+  GL_CHECK(glGetShaderiv(fragment_shader, GL_COMPILE_STATUS, &result));
+  GL_CHECK(glGetShaderiv(fragment_shader, GL_INFO_LOG_LENGTH, &info_log_length));
   if (info_log_length > 0) {
     std::string err_msg(info_log_length, '\0');
-    glGetShaderInfoLog(fragment_shader, info_log_length, nullptr, &err_msg[0]);
+    GL_CHECK(glGetShaderInfoLog(fragment_shader, info_log_length, nullptr, &err_msg[0]));
     std::cerr << "FRAGMENT SHADER ERROR: " << err_msg << std::endl;
   }
 
   // link
-  GLuint program = glCreateProgram();
-  glAttachShader(program, vertex_shader);
-  glAttachShader(program, fragment_shader);
-  glLinkProgram(program);
-  glGetShaderiv(program, GL_LINK_STATUS, &result);
-  glGetShaderiv(program, GL_INFO_LOG_LENGTH, &info_log_length);
+  GLuint program;
+  GL_CHECK(program = glCreateProgram());
+  GL_CHECK(glAttachShader(program, vertex_shader));
+  GL_CHECK(glAttachShader(program, fragment_shader));
+  GL_CHECK(glLinkProgram(program));
+  GL_CHECK(glGetProgramiv(program, GL_LINK_STATUS, &result));
+  GL_CHECK(glGetProgramiv(program, GL_INFO_LOG_LENGTH, &info_log_length));
   if (info_log_length > 0) {
     std::string err_msg(info_log_length, '\0');
-    glGetProgramInfoLog(program, info_log_length, nullptr, &err_msg[0]);
+    GL_CHECK(glGetProgramInfoLog(program, info_log_length, nullptr, &err_msg[0]));
     std::cerr << "SHADER LINK ERROR: " << err_msg << std::endl;
   }
 
-  glDetachShader(program, vertex_shader);
-  glDetachShader(program, fragment_shader);
-  glDeleteShader(vertex_shader);
-  glDeleteShader(fragment_shader);
+  GL_CHECK(glDetachShader(program, vertex_shader));
+  GL_CHECK(glDetachShader(program, fragment_shader));
+  GL_CHECK(glDeleteShader(vertex_shader));
+  GL_CHECK(glDeleteShader(fragment_shader));
 
   s_program = program;
 }
 
 static void init() {
-  glGenVertexArrays(1, &s_default_vao);
-  glBindVertexArray(s_default_vao);
+  GL_CHECK(glGenVertexArrays(1, &s_default_vao));
+  GL_CHECK(glBindVertexArray(s_default_vao));
 
   load_models();
   load_shaders();
+
+  s_camera.pos = vectorial::vec3f(0.0f, -20.0f, 10.0f);
+  s_camera.pitch = 0.0f;
+  s_camera.yaw = 0.0f;
+  s_camera.projection = vectorial::mat4f::perspective(1.3f, 1.7f, 0.01f, 1000.0f);
+}
+
+static void bind_constants(GLuint program, const vectorial::mat4f& world, const vectorial::mat4f& view, const vectorial::mat4f& proj) {
+  // TODO: only do this when loading the shader
+  GLuint world_view_proj_uniform;
+  GL_CHECK(world_view_proj_uniform = glGetUniformLocation(program, "world_view_proj"));
+
+  // add a transform to rotation Z up to Y up
+  // NOTE: this is applied to the view transform (inverse of the camera world transform)
+  vectorial::mat4f makeYUp = vectorial::mat4f::axisRotation(-1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f));
+
+  // set the constant
+  vectorial::mat4f world_view_proj = proj * makeYUp * view * world;
+  float world_view_proj_float[16];
+  world_view_proj.store(world_view_proj_float);
+  GL_CHECK(glUniformMatrix4fv(world_view_proj_uniform, 1, GL_FALSE, world_view_proj_float));
+}
+
+static vectorial::mat4f makeCameraTransform(Camera* cam) {
+  vectorial::mat4f cameraYaw = vectorial::mat4f::axisRotation(cam->yaw, vectorial::vec3f(.0f, 0.0f, 1.0f));
+  vectorial::mat4f cameraPitch = vectorial::mat4f::axisRotation(cam->pitch, cameraYaw.value.x);
+  return vectorial::mat4f::translation(cam->pos) * cameraPitch * cameraYaw;
+}
+
+extern "C" void app_input_key_down(AppKeyCode key) {
+  s_keyStatus[key] = true;
+}
+
+extern "C" void app_input_key_up(AppKeyCode key) {
+  s_keyStatus[key] = false;
 }
 
 extern "C" void app_render(float dt) {
@@ -255,17 +341,73 @@ extern "C" void app_render(float dt) {
   s_time += dt;
   float color_val = sinf(s_time);
 
+  // compute the camera's orientation
+  vectorial::mat4f cameraOld = makeCameraTransform(&s_camera);
+  vectorial::vec3f fwd = cameraOld.value.y;
+  vectorial::vec3f right = cameraOld.value.x;
+  vectorial::vec3f up = cameraOld.value.z;
+
+  // apply inputs
+  float rotateAngle = 3.14159 * dt;
+  float moveDistance = 50.0f * dt;
+
+  if (s_keyStatus[APP_KEY_CODE_A]) {
+    s_camera.pos -= right * moveDistance;
+  }
+  if (s_keyStatus[APP_KEY_CODE_D]) {
+    s_camera.pos += right * moveDistance;
+  }
+  if (s_keyStatus[APP_KEY_CODE_E]) {
+    s_camera.pos += up * moveDistance;
+  }
+  if (s_keyStatus[APP_KEY_CODE_Q]) {
+    s_camera.pos -= up * moveDistance;
+  }
+  if (s_keyStatus[APP_KEY_CODE_W]) {
+    s_camera.pos += fwd * moveDistance;
+  }
+  if (s_keyStatus[APP_KEY_CODE_S]) {
+    s_camera.pos -= fwd * moveDistance;
+  }
+  if (s_keyStatus[APP_KEY_CODE_LEFT]) {
+    s_camera.yaw += rotateAngle;
+  }
+  if (s_keyStatus[APP_KEY_CODE_RIGHT]) {
+    s_camera.yaw += -rotateAngle;
+  }
+  if (s_keyStatus[APP_KEY_CODE_UP]) {
+    s_camera.pitch += -rotateAngle;
+  }
+  if (s_keyStatus[APP_KEY_CODE_DOWN]) {
+    s_camera.pitch += rotateAngle;
+  }
+
+  // build the camera's world transform
+  vectorial::mat4f view = vectorial::inverse(makeCameraTransform(&s_camera));
+
+  // render
   glClearColor(color_val, color_val, color_val, 0.0f);
   glClear(GL_COLOR_BUFFER_BIT);
 
   // draw all the models
+  bool first = true;
   for (const auto& model : s_models) {
-    glUseProgram(s_program);
-    glEnableVertexAttribArray(0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, model.ib);
-    glBindBuffer(GL_ARRAY_BUFFER, model.vb);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), nullptr);
-    glDrawElements(GL_TRIANGLES, model.tri_count, GL_UNSIGNED_SHORT, nullptr);
-    glDisableVertexAttribArray(0);
+    if (first) {
+      GL_CHECK(glPolygonMode(GL_FRONT_AND_BACK, GL_LINE));
+      first = false;
+    }
+    else {
+      GL_CHECK(glPolygonMode(GL_FRONT_AND_BACK, GL_FILL));
+    }
+
+    bind_constants(s_program, model.transform, view, s_camera.projection);
+
+    GL_CHECK(glUseProgram(s_program));
+    GL_CHECK(glEnableVertexAttribArray(0));
+    GL_CHECK(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, model.ib));
+    GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, model.vb));
+    GL_CHECK(glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), nullptr));
+    GL_CHECK(glDrawElements(GL_TRIANGLES, model.tri_count, GL_UNSIGNED_SHORT, nullptr));
+    GL_CHECK(glDisableVertexAttribArray(0));
   }
 }
