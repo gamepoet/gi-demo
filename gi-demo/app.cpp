@@ -191,13 +191,17 @@ static void load_model(const char* filename, const char* mtl_dirname) {
   }
 
   // create the index buffer
+  const uint16_t* ib_data = &indices[0];
+  int ib_size_bytes = indices.size() * sizeof(uint16_t);
   GL_CHECK(glGenBuffers(1, &model.ib));
   GL_CHECK(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, model.ib));
-  GL_CHECK(glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(uint16_t), &indices[0], GL_STATIC_DRAW));
+  GL_CHECK(glBufferData(GL_ELEMENT_ARRAY_BUFFER, ib_size_bytes, ib_data, GL_STATIC_DRAW));
 
+  const Vertex* vb_data = &vertices[0];
+  int vb_size_bytes = vertices.size() * sizeof(Vertex);
   GL_CHECK(glGenBuffers(1, &model.vb));
   GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, model.vb));
-  GL_CHECK(glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), &vertices[0], GL_STATIC_DRAW));
+  GL_CHECK(glBufferData(GL_ARRAY_BUFFER, vb_size_bytes, vb_data, GL_STATIC_DRAW));
 
   GL_CHECK(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
   GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, 0));
@@ -320,7 +324,7 @@ static void bind_constants(GLuint program, const vectorial::mat4f& world, const 
 }
 
 static vectorial::mat4f makeCameraTransform(Camera* cam) {
-  vectorial::mat4f cameraYaw = vectorial::mat4f::axisRotation(cam->yaw, vectorial::vec3f(.0f, 0.0f, 1.0f));
+  vectorial::mat4f cameraYaw = vectorial::mat4f::axisRotation(cam->yaw, vectorial::vec3f(0.0f, 0.0f, 1.0f));
   vectorial::mat4f cameraPitch = vectorial::mat4f::axisRotation(cam->pitch, cameraYaw.value.x);
   return vectorial::mat4f::translation(cam->pos) * cameraPitch * cameraYaw;
 }
@@ -407,7 +411,7 @@ extern "C" void app_render(float dt) {
     GL_CHECK(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, model.ib));
     GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, model.vb));
     GL_CHECK(glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), nullptr));
-    GL_CHECK(glDrawElements(GL_TRIANGLES, model.tri_count, GL_UNSIGNED_SHORT, nullptr));
+    GL_CHECK(glDrawElements(GL_TRIANGLES, model.tri_count * 3, GL_UNSIGNED_SHORT, nullptr));
     GL_CHECK(glDisableVertexAttribArray(0));
   }
 }
