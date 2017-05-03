@@ -218,7 +218,7 @@ static void load_models() {
 
   const char* mtl_dirname = "gi-demo.app/Contents/Resources/";
   load_model("gi-demo.app/Contents/Resources/floor.obj", mtl_dirname);
-//  load_model("gi-demo.app/Contents/Resources/cornell_box.obj", mtl_dirname);
+  load_model("gi-demo.app/Contents/Resources/cornell_box.obj", mtl_dirname);
 }
 
 static void load_shaders() {
@@ -354,6 +354,10 @@ extern "C" void app_render(float dt) {
   // apply inputs
   float rotateAngle = 3.14159 * dt;
   float moveDistance = 50.0f * dt;
+  if (s_keyStatus[APP_KEY_CODE_LSHIFT] || s_keyStatus[APP_KEY_CODE_RSHIFT]) {
+    rotateAngle *= 2.0f;
+    moveDistance *= 5.0f;
+  }
 
   if (s_keyStatus[APP_KEY_CODE_A]) {
     s_camera.pos -= right * moveDistance;
