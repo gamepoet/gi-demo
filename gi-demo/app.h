@@ -9,6 +9,7 @@ typedef enum AppKeyCode {
   APP_KEY_CODE_D,
   APP_KEY_CODE_E,
   APP_KEY_CODE_Q,
+  APP_KEY_CODE_R,
   APP_KEY_CODE_S,
   APP_KEY_CODE_W,
   APP_KEY_CODE_UP,

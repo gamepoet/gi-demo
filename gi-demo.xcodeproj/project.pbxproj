@@ -13,6 +13,8 @@
 		5B487F931EB3FD8F00568F21 /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 5B487F911EB3FD8F00568F21 /* Main.storyboard */; };
 		5B487F9C1EB4048A00568F21 /* AppOpenGLView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B487F9B1EB4048A00568F21 /* AppOpenGLView.swift */; };
 		5B4AC5B91EB719BF005DD560 /* floor.obj in Resources */ = {isa = PBXBuildFile; fileRef = 5B4AC5B81EB719BF005DD560 /* floor.obj */; };
+		5B4EEA4C1EBB17A60032116A /* lit.fs.glsl in Resources */ = {isa = PBXBuildFile; fileRef = 5B4EEA4A1EBB17A50032116A /* lit.fs.glsl */; };
+		5B4EEA4D1EBB17A60032116A /* lit.vs.glsl in Resources */ = {isa = PBXBuildFile; fileRef = 5B4EEA4B1EBB17A50032116A /* lit.vs.glsl */; };
 		5B98A8121EB444DA00B70BDC /* tiny_obj_loader.cc in Sources */ = {isa = PBXBuildFile; fileRef = 5B98A8101EB444DA00B70BDC /* tiny_obj_loader.cc */; };
 		5B98A8171EB4458000B70BDC /* app.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5B98A8151EB4458000B70BDC /* app.cpp */; };
 		5B98A81B1EB4522F00B70BDC /* cornell_box.mtl in Resources */ = {isa = PBXBuildFile; fileRef = 5B98A8191EB4522F00B70BDC /* cornell_box.mtl */; };
@@ -28,6 +30,8 @@
 		5B487F941EB3FD8F00568F21 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		5B487F9B1EB4048A00568F21 /* AppOpenGLView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = AppOpenGLView.swift; sourceTree = "<group>"; };
 		5B4AC5B81EB719BF005DD560 /* floor.obj */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = floor.obj; sourceTree = "<group>"; };
+		5B4EEA4A1EBB17A50032116A /* lit.fs.glsl */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = lit.fs.glsl; sourceTree = "<group>"; };
+		5B4EEA4B1EBB17A50032116A /* lit.vs.glsl */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = lit.vs.glsl; sourceTree = "<group>"; };
 		5B98A80F1EB444D900B70BDC /* gi-demo-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "gi-demo-Bridging-Header.h"; sourceTree = "<group>"; };
 		5B98A8101EB444DA00B70BDC /* tiny_obj_loader.cc */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = tiny_obj_loader.cc; path = vendor/tinyobjloader/tiny_obj_loader.cc; sourceTree = "<group>"; };
 		5B98A8111EB444DA00B70BDC /* tiny_obj_loader.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = tiny_obj_loader.h; path = vendor/tinyobjloader/tiny_obj_loader.h; sourceTree = "<group>"; };
@@ -103,6 +107,15 @@
 			path = "gi-demo";
 			sourceTree = "<group>";
 		};
+		5B4EEA491EBB17A50032116A /* shaders */ = {
+			isa = PBXGroup;
+			children = (
+				5B4EEA4A1EBB17A50032116A /* lit.fs.glsl */,
+				5B4EEA4B1EBB17A50032116A /* lit.vs.glsl */,
+			);
+			path = shaders;
+			sourceTree = "<group>";
+		};
 		5B98A8131EB444EE00B70BDC /* vendor */ = {
 			isa = PBXGroup;
 			children = (
@@ -124,6 +137,7 @@
 		5B98A8181EB4522F00B70BDC /* data */ = {
 			isa = PBXGroup;
 			children = (
+				5B4EEA491EBB17A50032116A /* shaders */,
 				5B4AC5B81EB719BF005DD560 /* floor.obj */,
 				5B98A8191EB4522F00B70BDC /* cornell_box.mtl */,
 				5B98A81A1EB4522F00B70BDC /* cornell_box.obj */,
@@ -237,8 +251,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				5B98A81B1EB4522F00B70BDC /* cornell_box.mtl in Resources */,
+				5B4EEA4D1EBB17A60032116A /* lit.vs.glsl in Resources */,
 				5B487F901EB3FD8F00568F21 /* Assets.xcassets in Resources */,
 				5B487F931EB3FD8F00568F21 /* Main.storyboard in Resources */,
+				5B4EEA4C1EBB17A60032116A /* lit.fs.glsl in Resources */,
 				5B4AC5B91EB719BF005DD560 /* floor.obj in Resources */,
 				5B98A81C1EB4522F00B70BDC /* cornell_box.obj in Resources */,
 			);

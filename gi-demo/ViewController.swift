@@ -86,6 +86,7 @@ class ViewController: NSViewController {
     kVK_ANSI_A: APP_KEY_CODE_A,
     kVK_ANSI_D: APP_KEY_CODE_D,
     kVK_ANSI_E: APP_KEY_CODE_E,
+    kVK_ANSI_R: APP_KEY_CODE_R,
     kVK_ANSI_Q: APP_KEY_CODE_Q,
     kVK_ANSI_S: APP_KEY_CODE_S,
     kVK_ANSI_W: APP_KEY_CODE_W,

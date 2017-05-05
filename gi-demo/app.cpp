@@ -1,6 +1,7 @@
 #include <OpenGL/gl3.h>
 #include <math.h>
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <unistd.h>
 #include <stdint.h>
@@ -32,10 +33,18 @@ struct Camera {
   vectorial::mat4f projection;
 };
 
+struct Light {
+  vectorial::vec3f pos;
+  vectorial::vec3f color;
+  float intensity;
+  float range;
+};
+
 static bool s_first_draw = true;
 static float s_time = 0.0f;
 static std::vector<Model> s_models;
 static Camera s_camera;
+static Light s_light;
 
 static GLuint s_default_vao;
 static GLuint s_program;
@@ -51,6 +60,7 @@ struct Vec3 {
 struct Vertex {
   Vec3 p;
   Vec3 n;
+  Vec3 c;
 };
 
 static void report_error(const char* format, ...) {
@@ -98,14 +108,14 @@ static void vec_norm(Vec3* out, const Vec3& a) {
   vec_mul(out, a, 1.0f / len);
 }
 
-//static void load_file(std::string* out, const char* filename) {
-//  if (std::ifstream is{filename, std::ios::binary | std::ios::ate}) {
-//    auto size = is.tellg();
-//    out->resize(size, '\0');
-//    is.seekg(0);
-//    is.read(&str[0], size);
-//  }
-//}
+static void load_file(std::string* out, const char* filename) {
+  if (std::ifstream is{filename, std::ios::binary | std::ios::ate}) {
+    auto size = is.tellg();
+    out->resize(size, '\0');
+    is.seekg(0);
+    is.read(&(*out)[0], size);
+  }
+}
 
 static void normal_from_face(Vec3* out, const Vec3& p0, const Vec3& p1, const Vec3& p2) {
   Vec3 p01;
@@ -177,9 +187,22 @@ static void load_model(const char* filename, const char* mtl_dirname) {
         nor2 = normal;
       }
 
-      Vertex v0 = { pos0, nor0 };
-      Vertex v1 = { pos1, nor1 };
-      Vertex v2 = { pos2, nor2 };
+      Vec3 color;
+      if (materials.size() > 0) {
+        const tinyobj::material_t& mat = materials[shape.mesh.material_ids[face]];
+        color.x = mat.diffuse[0];
+        color.y = mat.diffuse[1];
+        color.z = mat.diffuse[2];
+      }
+      else {
+        color.x = 0.5f;
+        color.y = 0.5f;
+        color.z = 0.5f;
+      }
+
+      Vertex v0 = { pos0, nor0, color };
+      Vertex v1 = { pos1, nor1, color };
+      Vertex v2 = { pos2, nor2, color };
       vertices.push_back(v0);
       vertices.push_back(v1);
       vertices.push_back(v2);
@@ -192,13 +215,13 @@ static void load_model(const char* filename, const char* mtl_dirname) {
 
   // create the index buffer
   const uint16_t* ib_data = &indices[0];
-  int ib_size_bytes = indices.size() * sizeof(uint16_t);
+  int ib_size_bytes = (int)indices.size() * sizeof(uint16_t);
   GL_CHECK(glGenBuffers(1, &model.ib));
   GL_CHECK(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, model.ib));
   GL_CHECK(glBufferData(GL_ELEMENT_ARRAY_BUFFER, ib_size_bytes, ib_data, GL_STATIC_DRAW));
 
   const Vertex* vb_data = &vertices[0];
-  int vb_size_bytes = vertices.size() * sizeof(Vertex);
+  int vb_size_bytes = (int)vertices.size() * sizeof(Vertex);
   GL_CHECK(glGenBuffers(1, &model.vb));
   GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, model.vb));
   GL_CHECK(glBufferData(GL_ARRAY_BUFFER, vb_size_bytes, vb_data, GL_STATIC_DRAW));
@@ -207,18 +230,32 @@ static void load_model(const char* filename, const char* mtl_dirname) {
   GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, 0));
 
   // finish up the model and save it
-  model.tri_count = indices.size() / 3;
+  model.tri_count = (int)indices.size() / 3;
   model.transform = vectorial::mat4f::identity();
   s_models.push_back(model);
+}
+
+static void model_destroy(Model* model) {
+  GL_CHECK(glDeleteBuffers(1, &model->ib));
+  GL_CHECK(glDeleteBuffers(1, &model->vb));
 }
 
 static void load_models() {
 //  char * dir = getcwd(NULL, 0);
 //  std::cout << "Current dir: " << dir << std::endl;
 
-  const char* mtl_dirname = "gi-demo.app/Contents/Resources/";
-  load_model("gi-demo.app/Contents/Resources/floor.obj", mtl_dirname);
-  load_model("gi-demo.app/Contents/Resources/cornell_box.obj", mtl_dirname);
+  const char* mtl_dirname = "gi-demo/data/";
+  load_model("gi-demo/data/floor.obj", mtl_dirname);
+  load_model("gi-demo/data/cornell_box.obj", mtl_dirname);
+//  s_models.back().transform = vectorial::mat4f::scale(10.0f);
+  s_models.back().transform = vectorial::mat4f::scale(0.1f) * vectorial::mat4f::axisRotation(1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f));
+}
+
+static void unload_models() {
+  for (Model& model : s_models) {
+    model_destroy(&model);
+  }
+  s_models.clear();
 }
 
 static void load_shaders() {
@@ -227,32 +264,19 @@ static void load_shaders() {
   GL_CHECK(vertex_shader = glCreateShader(GL_VERTEX_SHADER));
   GL_CHECK(fragment_shader = glCreateShader(GL_FRAGMENT_SHADER));
 
-//  std::string vertex_code;
-//  std::string fragment_code;
-//  load_file(&vertex_code, "gi-demo.app/Contents/Resources/constant_color_vertex.glsl");
-//  load_file(&fragment_code, "gi-demo.app/Contents/Resources/constant_color_fragment.glsl");
-
-  const char* vertex_code =
-    "#version 330 core\n"
-    "layout(location = 0) in vec3 position;\n"
-    "uniform mat4 world_view_proj;\n"
-    "void main() {\n"
-    "  gl_Position = world_view_proj * vec4(position, 1.0);\n"
-    "}\n"
-  ;
-  const char* fragment_code =
-    "#version 330 core\n"
-    "out vec3 color;\n"
-    "void main() {\n"
-    "  color = vec3(1, 0, 0);\n"
-    "}\n"
-  ;
+  std::string vertex_code;
+  std::string fragment_code;
+  load_file(&vertex_code, "gi-demo/data/shaders/lit.vs.glsl");
+  load_file(&fragment_code, "gi-demo/data/shaders/lit.fs.glsl");
 
   GLint result = GL_FALSE;
   int info_log_length;
 
+  const char* vertex_code_str = vertex_code.c_str();
+  const char* fragment_code_str = fragment_code.c_str();
+
   // compile
-  GL_CHECK(glShaderSource(vertex_shader, 1, &vertex_code, nullptr));
+  GL_CHECK(glShaderSource(vertex_shader, 1, &vertex_code_str, nullptr));
   GL_CHECK(glCompileShader(vertex_shader));
   GL_CHECK(glGetShaderiv(vertex_shader, GL_COMPILE_STATUS, &result));
   GL_CHECK(glGetShaderiv(vertex_shader, GL_INFO_LOG_LENGTH, &info_log_length));
@@ -262,7 +286,7 @@ static void load_shaders() {
     std::cerr << "VERTEX SHADER ERROR: " << err_msg << std::endl;
   }
 
-  GL_CHECK(glShaderSource(fragment_shader, 1, &fragment_code, nullptr));
+  GL_CHECK(glShaderSource(fragment_shader, 1, &fragment_code_str, nullptr));
   GL_CHECK(glCompileShader(fragment_shader));
   GL_CHECK(glGetShaderiv(fragment_shader, GL_COMPILE_STATUS, &result));
   GL_CHECK(glGetShaderiv(fragment_shader, GL_INFO_LOG_LENGTH, &info_log_length));
@@ -294,33 +318,82 @@ static void load_shaders() {
   s_program = program;
 }
 
-static void init() {
+static void unload_shaders() {
+  GL_CHECK(glDeleteProgram(s_program));
+  s_program = 0;
+}
+
+static void init(bool reset) {
   GL_CHECK(glGenVertexArrays(1, &s_default_vao));
   GL_CHECK(glBindVertexArray(s_default_vao));
 
   load_models();
   load_shaders();
 
-  s_camera.pos = vectorial::vec3f(0.0f, -20.0f, 10.0f);
-  s_camera.pitch = 0.0f;
-  s_camera.yaw = 0.0f;
-  s_camera.projection = vectorial::mat4f::perspective(1.3f, 1.7f, 0.01f, 1000.0f);
+  if (!reset) {
+    s_camera.pos = vectorial::vec3f(0.0f, -20.0f, 10.0f);
+    s_camera.pitch = 0.0f;
+    s_camera.yaw = 0.0f;
+    s_camera.projection = vectorial::mat4f::perspective(1.3f, 1.7f, 0.01f, 1000.0f);
+
+    s_light.pos = vectorial::vec3f(0.0f, 5.0f, 5.0f);
+    s_light.color = vectorial::vec3f(1.0f, 1.0f, 1.0f);
+    s_light.intensity = 1.0f;
+    s_light.range = 15.0f;
+  }
+}
+
+static void destroy() {
+  unload_shaders();
+  unload_models();
+
+  s_models.clear();
+  GL_CHECK(glBindVertexArray(0));
+  GL_CHECK(glDeleteVertexArrays(1, &s_default_vao));
+}
+
+static void bind_constant_float(GLuint program, const char* name, float value) {
+  // TODO: cache the uniform id
+  GLuint uniform_id;
+  GL_CHECK(uniform_id = glGetUniformLocation(program, name));
+  GL_CHECK(glUniform1fv(uniform_id, 1, &value));
+}
+
+static void bind_constant_vec3(GLuint program, const char* name, const vectorial::vec3f& value) {
+  float value_f[3];
+  value.store(value_f);
+
+  // TODO: cache the uniform id
+  GLuint uniform_id;
+  GL_CHECK(uniform_id = glGetUniformLocation(program, name));
+  GL_CHECK(glUniform3fv(uniform_id, 1, value_f));
+}
+
+static void bind_constant_mat4(GLuint program, const char* name, const vectorial::mat4f& value) {
+  float value_f[16];
+  value.store(value_f);
+
+  // TODO: cache the uniform id
+  GLuint uniform_id;
+  GL_CHECK(uniform_id = glGetUniformLocation(program, name));
+  GL_CHECK(glUniformMatrix4fv(uniform_id, 1, GL_FALSE, value_f));
 }
 
 static void bind_constants(GLuint program, const vectorial::mat4f& world, const vectorial::mat4f& view, const vectorial::mat4f& proj) {
-  // TODO: only do this when loading the shader
-  GLuint world_view_proj_uniform;
-  GL_CHECK(world_view_proj_uniform = glGetUniformLocation(program, "world_view_proj"));
-
   // add a transform to rotation Z up to Y up
   // NOTE: this is applied to the view transform (inverse of the camera world transform)
   vectorial::mat4f makeYUp = vectorial::mat4f::axisRotation(-1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f));
+  const vectorial::mat4f world_view = makeYUp * view * world;
+  const vectorial::mat4f world_view_proj = proj * world_view;
 
-  // set the constant
-  vectorial::mat4f world_view_proj = proj * makeYUp * view * world;
-  float world_view_proj_float[16];
-  world_view_proj.store(world_view_proj_float);
-  GL_CHECK(glUniformMatrix4fv(world_view_proj_uniform, 1, GL_FALSE, world_view_proj_float));
+  const vectorial::vec3f light_pos_vs = vectorial::transformPoint((makeYUp * view), s_light.pos);
+
+  bind_constant_mat4(program, "world_view_proj", world_view_proj);
+  bind_constant_mat4(program, "world_view", world_view);
+  bind_constant_vec3(program, "light_pos_vs", light_pos_vs);
+  bind_constant_vec3(program, "light_color", s_light.color);
+  bind_constant_float(program, "light_intensity", s_light.intensity);
+  bind_constant_float(program, "light_range", s_light.range);
 }
 
 static vectorial::mat4f makeCameraTransform(Camera* cam) {
@@ -340,10 +413,11 @@ extern "C" void app_input_key_up(AppKeyCode key) {
 extern "C" void app_render(float dt) {
   if (s_first_draw) {
     s_first_draw = false;
-    init();
+    init(false);
   }
   s_time += dt;
-  float color_val = sinf(s_time);
+//  float color_val = sinf(s_time);
+  float color_val = 0.4f;
 
   // compute the camera's orientation
   vectorial::mat4f cameraOld = makeCameraTransform(&s_camera);
@@ -359,43 +433,86 @@ extern "C" void app_render(float dt) {
     moveDistance *= 5.0f;
   }
 
-  if (s_keyStatus[APP_KEY_CODE_A]) {
-    s_camera.pos -= right * moveDistance;
+  if (s_keyStatus[APP_KEY_CODE_R]) {
+    destroy();
+    init(true);
   }
-  if (s_keyStatus[APP_KEY_CODE_D]) {
-    s_camera.pos += right * moveDistance;
+
+  if (s_keyStatus[APP_KEY_CODE_LCONTROL]) {
+    if (s_keyStatus[APP_KEY_CODE_A]) {
+      s_light.pos -= vectorial::vec3f(1.0f, 0.0f, 0.0f) * moveDistance;
+    }
+    if (s_keyStatus[APP_KEY_CODE_D]) {
+      s_light.pos += vectorial::vec3f(1.0f, 0.0f, 0.0f) * moveDistance;
+    }
+    if (s_keyStatus[APP_KEY_CODE_S]) {
+      s_light.pos -= vectorial::vec3f(0.0f, 1.0f, 0.0f) * moveDistance;
+    }
+    if (s_keyStatus[APP_KEY_CODE_W]) {
+      s_light.pos += vectorial::vec3f(0.0f, 1.0f, 0.0f) * moveDistance;
+    }
+    if (s_keyStatus[APP_KEY_CODE_Q]) {
+      s_light.pos += vectorial::vec3f(0.0f, 0.0f, 1.0f) * moveDistance;
+    }
+    if (s_keyStatus[APP_KEY_CODE_E]) {
+      s_light.pos -= vectorial::vec3f(0.0f, 0.0f, 1.0f) * moveDistance;
+    }
+    if (s_keyStatus[APP_KEY_CODE_UP]) {
+      s_light.intensity += 5.0f * dt;
+    }
+    if (s_keyStatus[APP_KEY_CODE_DOWN]) {
+      s_light.intensity -= 5.0f * dt;
+    }
+    if (s_keyStatus[APP_KEY_CODE_LEFT]) {
+      s_light.range -= 5.0f * dt;
+    }
+    if (s_keyStatus[APP_KEY_CODE_RIGHT]) {
+      s_light.range += 5.0f * dt;
+    }
   }
-  if (s_keyStatus[APP_KEY_CODE_E]) {
-    s_camera.pos += up * moveDistance;
-  }
-  if (s_keyStatus[APP_KEY_CODE_Q]) {
-    s_camera.pos -= up * moveDistance;
-  }
-  if (s_keyStatus[APP_KEY_CODE_W]) {
-    s_camera.pos += fwd * moveDistance;
-  }
-  if (s_keyStatus[APP_KEY_CODE_S]) {
-    s_camera.pos -= fwd * moveDistance;
-  }
-  if (s_keyStatus[APP_KEY_CODE_LEFT]) {
-    s_camera.yaw += rotateAngle;
-  }
-  if (s_keyStatus[APP_KEY_CODE_RIGHT]) {
-    s_camera.yaw += -rotateAngle;
-  }
-  if (s_keyStatus[APP_KEY_CODE_UP]) {
-    s_camera.pitch += -rotateAngle;
-  }
-  if (s_keyStatus[APP_KEY_CODE_DOWN]) {
-    s_camera.pitch += rotateAngle;
+  else {
+    if (s_keyStatus[APP_KEY_CODE_A]) {
+      s_camera.pos -= right * moveDistance;
+    }
+    if (s_keyStatus[APP_KEY_CODE_D]) {
+      s_camera.pos += right * moveDistance;
+    }
+    if (s_keyStatus[APP_KEY_CODE_E]) {
+      s_camera.pos += up * moveDistance;
+    }
+    if (s_keyStatus[APP_KEY_CODE_Q]) {
+      s_camera.pos -= up * moveDistance;
+    }
+    if (s_keyStatus[APP_KEY_CODE_W]) {
+      s_camera.pos += fwd * moveDistance;
+    }
+    if (s_keyStatus[APP_KEY_CODE_S]) {
+      s_camera.pos -= fwd * moveDistance;
+    }
+    if (s_keyStatus[APP_KEY_CODE_LEFT]) {
+      s_camera.yaw += rotateAngle;
+    }
+    if (s_keyStatus[APP_KEY_CODE_RIGHT]) {
+      s_camera.yaw -= rotateAngle;
+    }
+    if (s_keyStatus[APP_KEY_CODE_UP]) {
+      s_camera.pitch += rotateAngle;
+    }
+    if (s_keyStatus[APP_KEY_CODE_DOWN]) {
+      s_camera.pitch -= rotateAngle;
+    }
   }
 
   // build the camera's world transform
   vectorial::mat4f view = vectorial::inverse(makeCameraTransform(&s_camera));
 
   // render
-  glClearColor(color_val, color_val, color_val, 0.0f);
-  glClear(GL_COLOR_BUFFER_BIT);
+  GL_CHECK(glClearColor(color_val, color_val, color_val, 0.0f));
+  GL_CHECK(glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
+
+  GL_CHECK(glEnable(GL_DEPTH_TEST));
+  GL_CHECK(glDepthFunc(GL_LESS));
+//  GL_CHECK(glCullFace(GL_FRONT_AND_BACK));
 
   // draw all the models
   bool first = true;
@@ -408,14 +525,20 @@ extern "C" void app_render(float dt) {
       GL_CHECK(glPolygonMode(GL_FRONT_AND_BACK, GL_FILL));
     }
 
+    GL_CHECK(glUseProgram(s_program));
     bind_constants(s_program, model.transform, view, s_camera.projection);
 
-    GL_CHECK(glUseProgram(s_program));
     GL_CHECK(glEnableVertexAttribArray(0));
+    GL_CHECK(glEnableVertexAttribArray(1));
+    GL_CHECK(glEnableVertexAttribArray(2));
     GL_CHECK(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, model.ib));
     GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, model.vb));
     GL_CHECK(glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), nullptr));
+    GL_CHECK(glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, n)));
+    GL_CHECK(glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, c)));
     GL_CHECK(glDrawElements(GL_TRIANGLES, model.tri_count * 3, GL_UNSIGNED_SHORT, nullptr));
     GL_CHECK(glDisableVertexAttribArray(0));
+    GL_CHECK(glDisableVertexAttribArray(1));
+    GL_CHECK(glDisableVertexAttribArray(2));
   }
 }
