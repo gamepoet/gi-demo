@@ -26,12 +26,15 @@ struct Model {
   GLuint ib;
   GLuint vb;
   int tri_count;
+  bool wireframe;
 };
 
 struct Camera {
   vectorial::vec3f pos;
   float pitch;
   float yaw;
+  float near;
+  float far;
   vectorial::mat4f projection;
 };
 
@@ -65,8 +68,13 @@ static std::vector<Model> s_models;
 static Camera s_camera;
 static Light s_light;
 
+// debug
+static bool s_draw_wireframe = false;
+static bool s_draw_depth = false;
+
 static GLuint s_default_vao;
 static GLuint s_program;
+static GLuint s_program_depth;
 
 static bool s_keyStatus[APP_KEY_CODE_COUNT];
 
@@ -136,14 +144,11 @@ static void load_file(std::string* out, const char* filename) {
   }
 }
 
-static GLuint load_shader(const char* filename) {
-  const std::string filename_vs = std::string(filename) + ".vs.glsl";
-  const std::string filename_fs = std::string(filename) + ".fs.glsl";
-
+static GLuint load_shader(const char* filename_vs, const char* filename_fs) {
   std::string vertex_code;
   std::string fragment_code;
-  load_file(&vertex_code, filename_vs.c_str());
-  load_file(&fragment_code, filename_fs.c_str());
+  load_file(&vertex_code, filename_vs);
+  load_file(&fragment_code, filename_fs);
 
   GLint result = GL_FALSE;
   int info_log_length;
@@ -161,7 +166,7 @@ static GLuint load_shader(const char* filename) {
   if (info_log_length > 0) {
     std::string err_msg(info_log_length, '\0');
     GL_CHECK(glGetShaderInfoLog(vertex_shader, info_log_length, nullptr, &err_msg[0]));
-    std::cerr << "VERTEX SHADER ERROR: " << err_msg << std::endl;
+    std::cerr << "VERTEX SHADER ERROR: (" << filename_vs << ")" << err_msg << std::endl;
     GL_CHECK(glDeleteShader(vertex_shader));
     return 0;
   }
@@ -176,7 +181,7 @@ static GLuint load_shader(const char* filename) {
   if (info_log_length > 0) {
     std::string err_msg(info_log_length, '\0');
     GL_CHECK(glGetShaderInfoLog(fragment_shader, info_log_length, nullptr, &err_msg[0]));
-    std::cerr << "FRAGMENT SHADER ERROR: " << err_msg << std::endl;
+    std::cerr << "FRAGMENT SHADER ERROR: (" << filename_vs << ")" << err_msg << std::endl;
     GL_CHECK(glDeleteShader(fragment_shader));
     return 0;
   }
@@ -192,7 +197,7 @@ static GLuint load_shader(const char* filename) {
   if (info_log_length > 0) {
     std::string err_msg(info_log_length, '\0');
     GL_CHECK(glGetProgramInfoLog(program, info_log_length, nullptr, &err_msg[0]));
-    std::cerr << "SHADER LINK ERROR: " << err_msg << std::endl;
+    std::cerr << "SHADER LINK ERROR: (" << filename_vs << "," << filename_fs << ")" << err_msg << std::endl;
     GL_CHECK(glDetachShader(program, vertex_shader));
     GL_CHECK(glDetachShader(program, fragment_shader));
     GL_CHECK(glDeleteShader(vertex_shader));
@@ -208,17 +213,21 @@ static GLuint load_shader(const char* filename) {
   return program;
 }
 
-static void normal_from_face(Vec3* out, const Vec3& p0, const Vec3& p1, const Vec3& p2) {
-  Vec3 p01;
-  Vec3 p02;
-  Vec3 cross;
-  vec_sub(&p01, p1, p0);
-  vec_sub(&p02, p2, p0);
-  vec_cross(&cross, p01, p02);
-  vec_norm(out, cross);
+static GLuint load_shader(const char* base_filename) {
+  const std::string filename_vs = std::string(base_filename) + ".vs.glsl";
+  const std::string filename_fs = std::string(base_filename) + ".fs.glsl";
+  return load_shader(filename_vs.c_str(), filename_fs.c_str());
 }
 
-static void load_model(const char* filename, const char* mtl_dirname) {
+static vectorial::vec3f normal_from_face(const vectorial::vec3f& p0, const vectorial::vec3f& p1, const vectorial::vec3f& p2) {
+  vectorial::vec3f p01 = p1 - p0;
+  vectorial::vec3f p02 = p2 - p0;
+  vectorial::vec3f cross = vectorial::cross(p01, p02);
+  vectorial::vec3f normal = vectorial::normalize(cross);
+  return normal;
+}
+
+static void load_model(const char* filename, const char* mtl_dirname, const vectorial::mat4f& transform) {
   tinyobj::attrib_t attrib;
   std::vector<tinyobj::shape_t> shapes;
   std::vector<tinyobj::material_t> materials;
@@ -235,6 +244,7 @@ static void load_model(const char* filename, const char* mtl_dirname) {
   model.ib = 0;
   model.vb = 0;
   model.tri_count = 0;
+  model.wireframe = false;
 
   std::vector<uint16_t> indices;
   std::vector<Vertex> vertices;
@@ -246,61 +256,59 @@ static void load_model(const char* filename, const char* mtl_dirname) {
       tinyobj::index_t idx2 = shape.mesh.indices[3 * face + 2];
 
       // positions
-      Vec3 pos0, pos1, pos2;
-      pos0.x = attrib.vertices[3 * idx0.vertex_index + 0];
-      pos0.y = attrib.vertices[3 * idx0.vertex_index + 1];
-      pos0.z = attrib.vertices[3 * idx0.vertex_index + 2];
-      pos1.x = attrib.vertices[3 * idx1.vertex_index + 0];
-      pos1.y = attrib.vertices[3 * idx1.vertex_index + 1];
-      pos1.z = attrib.vertices[3 * idx1.vertex_index + 2];
-      pos2.x = attrib.vertices[3 * idx2.vertex_index + 0];
-      pos2.y = attrib.vertices[3 * idx2.vertex_index + 1];
-      pos2.z = attrib.vertices[3 * idx2.vertex_index + 2];
+      vectorial::vec3f pos0, pos1, pos2;
+      pos0.load(&attrib.vertices[3 * idx0.vertex_index]);
+      pos1.load(&attrib.vertices[3 * idx1.vertex_index]);
+      pos2.load(&attrib.vertices[3 * idx2.vertex_index]);
+      pos0 = vectorial::transformPoint(transform, pos0);
+      pos1 = vectorial::transformPoint(transform, pos1);
+      pos2 = vectorial::transformPoint(transform, pos2);
 
       // normals
-      Vec3 nor0, nor1, nor2;
+      vectorial::vec3f nor0, nor1, nor2;
       if (attrib.normals.size() > 0) {
-        nor0.x = attrib.normals[3 * idx0.normal_index + 0];
-        nor0.y = attrib.normals[3 * idx0.normal_index + 1];
-        nor0.z = attrib.normals[3 * idx0.normal_index + 2];
-        nor1.x = attrib.normals[3 * idx1.normal_index + 0];
-        nor1.y = attrib.normals[3 * idx1.normal_index + 1];
-        nor1.z = attrib.normals[3 * idx1.normal_index + 2];
-        nor2.x = attrib.normals[3 * idx2.normal_index + 0];
-        nor2.y = attrib.normals[3 * idx2.normal_index + 1];
-        nor2.z = attrib.normals[3 * idx2.normal_index + 2];
+        nor0.load(&attrib.normals[3 * idx0.normal_index]);
+        nor1.load(&attrib.normals[3 * idx1.normal_index]);
+        nor2.load(&attrib.normals[3 * idx2.normal_index]);
+        nor0 = vectorial::transformVector(transform, nor0);
+        nor1 = vectorial::transformVector(transform, nor1);
+        nor2 = vectorial::transformVector(transform, nor2);
       }
       else {
-        Vec3 normal;
-        normal_from_face(&normal, pos0, pos1, pos2);
+        vectorial::vec3f normal = normal_from_face(pos0, pos1, pos2);
         nor0 = normal;
         nor1 = normal;
         nor2 = normal;
       }
 
-      Vec3 center;
-      vec_add(&center, pos0, pos1);
-      vec_add(&center, center, pos2);
-      vec_mul(&center, center, 1.0f / 3.0f);
-      s_debug_normals.push_back({center, nor0});
+      vectorial::vec3f center;
+      center = pos0 + pos1 + pos2;
+      center /= 3.0f;
+      VertexPN vtx;
+      center.store(&vtx.p.x);
+      nor0.store(&vtx.n.x);
+      s_debug_normals.push_back(vtx);
 
 
-      Vec3 color;
+      vectorial::vec3f color;
       if (materials.size() > 0) {
         const tinyobj::material_t& mat = materials[shape.mesh.material_ids[face]];
-        color.x = mat.diffuse[0];
-        color.y = mat.diffuse[1];
-        color.z = mat.diffuse[2];
+        color.load(mat.diffuse);
       }
       else {
-        color.x = 0.5f;
-        color.y = 0.5f;
-        color.z = 0.5f;
+        color = vectorial::vec3f(0.5f);
       }
 
-      Vertex v0 = { pos0, nor0, color };
-      Vertex v1 = { pos1, nor1, color };
-      Vertex v2 = { pos2, nor2, color };
+      Vertex v0, v1, v2;
+      pos0.store(&v0.p.x);
+      nor0.store(&v0.n.x);
+      color.store(&v0.c.x);
+      pos1.store(&v1.p.x);
+      nor1.store(&v1.n.x);
+      color.store(&v1.c.x);
+      pos2.store(&v2.p.x);
+      nor2.store(&v2.n.x);
+      color.store(&v2.c.x);
       vertices.push_back(v0);
       vertices.push_back(v1);
       vertices.push_back(v2);
@@ -343,9 +351,9 @@ static void load_models() {
 //  std::cout << "Current dir: " << dir << std::endl;
 
   const char* mtl_dirname = "gi-demo/data/";
-  load_model("gi-demo/data/floor.obj", mtl_dirname);
-  load_model("gi-demo/data/cornell_box.obj", mtl_dirname);
-  s_models.back().transform = vectorial::mat4f::scale(10.0f) * vectorial::mat4f::axisRotation(1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f));
+//  load_model("gi-demo/data/floor.obj", mtl_dirname);
+  load_model("gi-demo/data/cornell_box.obj", mtl_dirname, vectorial::mat4f::scale(10.0f) * vectorial::mat4f::axisRotation(1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f)));
+//  s_models.back().transform = vectorial::mat4f::scale(10.0f) * vectorial::mat4f::axisRotation(1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f));
 //  s_models.back().transform = vectorial::mat4f::scale(0.1f) * vectorial::mat4f::axisRotation(1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f));
 }
 
@@ -358,10 +366,13 @@ static void unload_models() {
 
 static void load_shaders() {
   s_program = load_shader("gi-demo/data/shaders/lit");
+  s_program_depth = load_shader("gi-demo/data/shaders/lit.vs.glsl", "gi-demo/data/shaders/depth.fs.glsl");
 }
 
 static void unload_shaders() {
+  GL_CHECK(glDeleteProgram(s_program_depth));
   GL_CHECK(glDeleteProgram(s_program));
+  s_program_depth = 0;
   s_program = 0;
 }
 
@@ -370,6 +381,16 @@ static void bind_constant_float(GLuint program, const char* name, float value) {
   GLuint uniform_id;
   GL_CHECK(uniform_id = glGetUniformLocation(program, name));
   GL_CHECK(glUniform1fv(uniform_id, 1, &value));
+}
+
+static void bind_constant_vec2(GLuint program, const char* name, const vectorial::vec2f& value) {
+  float value_f[2];
+  value.store(value_f);
+
+  // TODO: cache the uniform id
+  GLuint uniform_id;
+  GL_CHECK(uniform_id = glGetUniformLocation(program, name));
+  GL_CHECK(glUniform2fv(uniform_id, 1, value_f));
 }
 
 static void bind_constant_vec3(GLuint program, const char* name, const vectorial::vec3f& value) {
@@ -401,12 +422,46 @@ static void bind_constants(GLuint program, const vectorial::mat4f& world, const 
 
   const vectorial::vec3f light_pos_vs = vectorial::transformPoint((makeYUp * view), s_light.pos);
 
-  bind_constant_mat4(program, "world_view_proj", world_view_proj);
-  bind_constant_mat4(program, "world_view", world_view);
-  bind_constant_vec3(program, "light_pos_vs", light_pos_vs);
-  bind_constant_vec3(program, "light_color", s_light.color);
-  bind_constant_float(program, "light_intensity", s_light.intensity);
-  bind_constant_float(program, "light_range", s_light.range);
+  // loop over the program's uniforms
+  GLint uniform_count;
+  GLint uniform_name_max_len;
+  GL_CHECK(glGetProgramiv(program, GL_ACTIVE_UNIFORMS, &uniform_count));
+  GL_CHECK(glGetProgramiv(program, GL_ACTIVE_UNIFORM_MAX_LENGTH, &uniform_name_max_len));
+  char* uniform_name = (char*)alloca(uniform_name_max_len);
+  for (int index = 0; index < uniform_count; ++index) {
+    GLint uniform_size;
+    GLenum uniform_type;
+    GL_CHECK(glGetActiveUniform(program, index, uniform_name_max_len, nullptr, &uniform_size, &uniform_type, uniform_name));
+//    printf("Uniform[%d]: '%s'\n", index, uniform_name);
+
+    if (0 == strcmp(uniform_name, "world_view_proj")) {
+      bind_constant_mat4(program, "world_view_proj", world_view_proj);
+    }
+    else if (0 == strcmp(uniform_name, "world_view")) {
+      bind_constant_mat4(program, "world_view", world_view);
+    }
+    else if (0 == strcmp(uniform_name, "light_pos_vs")) {
+      bind_constant_vec3(program, "light_pos_vs", light_pos_vs);
+    }
+    else if (0 == strcmp(uniform_name, "light_color")) {
+      bind_constant_vec3(program, "light_color", s_light.color);
+    }
+    else if (0 == strcmp(uniform_name, "light_intensity")) {
+      bind_constant_float(program, "light_intensity", s_light.intensity);
+    }
+    else if (0 == strcmp(uniform_name, "light_range")) {
+      bind_constant_float(program, "light_range", s_light.range);
+    }
+    else if (0 == strcmp(uniform_name, "camera_near_far")) {
+      bind_constant_vec2(program, "camera_near_far", vectorial::vec2f(s_camera.near, s_camera.far));
+    }
+    else if (0 == strncmp(uniform_name, "gl_", 3)) {
+      // ignore
+    }
+    else {
+      printf("WARN: Unknown uniform: '%s'\n", uniform_name);
+    }
+  }
 }
 
 static vectorial::mat4f makeCameraTransform(Camera* cam) {
@@ -485,7 +540,9 @@ static void init(bool reset) {
     s_camera.pos = vectorial::vec3f(0.0f, -20.0f, 10.0f);
     s_camera.pitch = 0.0f;
     s_camera.yaw = 0.0f;
-    s_camera.projection = vectorial::mat4f::perspective(1.3f, 1.7f, 0.01f, 1000.0f);
+    s_camera.near = 0.01f;
+    s_camera.far = 100.0f;
+    s_camera.projection = vectorial::mat4f::perspective(1.3f, 1.7f, s_camera.near, s_camera.far);
 
     s_light.pos = vectorial::vec3f(0.0f, 5.0f, 5.0f);
     s_light.color = vectorial::vec3f(1.0f, 1.0f, 1.0f);
@@ -540,6 +597,12 @@ extern "C" void app_render(float dt) {
   if (s_keyStatus[APP_KEY_CODE_R]) {
     destroy();
     init(true);
+  }
+  if (s_keyStatus[APP_KEY_CODE_F1]) {
+    s_draw_wireframe = !s_draw_wireframe;
+  }
+  if (s_keyStatus[APP_KEY_CODE_F2]) {
+    s_draw_depth = !s_draw_depth;
   }
 
   if (s_keyStatus[APP_KEY_CODE_LCONTROL]) {
@@ -616,21 +679,27 @@ extern "C" void app_render(float dt) {
 
   GL_CHECK(glEnable(GL_DEPTH_TEST));
   GL_CHECK(glDepthFunc(GL_LESS));
-//  GL_CHECK(glCullFace(GL_FRONT_AND_BACK));
+  GL_CHECK(glEnable(GL_CULL_FACE));
+  GL_CHECK(glCullFace(GL_BACK));
 
   // draw all the models
-  bool first = true;
   for (const auto& model : s_models) {
-    if (first) {
+    if (model.wireframe || s_draw_wireframe) {
       GL_CHECK(glPolygonMode(GL_FRONT_AND_BACK, GL_LINE));
-      first = false;
     }
     else {
       GL_CHECK(glPolygonMode(GL_FRONT_AND_BACK, GL_FILL));
     }
 
-    GL_CHECK(glUseProgram(s_program));
-    bind_constants(s_program, model.transform, view, s_camera.projection);
+    GLuint program;
+    if (s_draw_depth) {
+      program = s_program_depth;
+    }
+    else {
+      program = s_program;
+    }
+    GL_CHECK(glUseProgram(program));
+    bind_constants(program, model.transform, view, s_camera.projection);
 
     GL_CHECK(glEnableVertexAttribArray(0));
     GL_CHECK(glEnableVertexAttribArray(1));
@@ -656,7 +725,7 @@ extern "C" void app_render(float dt) {
     nor[1] = normal.n.y;
     nor[2] = normal.n.z;
     float col[3] = { 1.0f, 1.0f, 1.0f};
-    ddraw_normal(pos, nor, col, 0.2f);
+    ddraw_normal(pos, nor, col, 0.5f);
   }
   ddraw_flush();
 }
