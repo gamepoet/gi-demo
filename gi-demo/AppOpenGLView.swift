@@ -19,6 +19,8 @@ class AppOpenGLView: NSOpenGLView {
       UInt32(NSOpenGLPFAAccelerated),
       UInt32(NSOpenGLPFAColorSize),
       UInt32(32),
+      UInt32(NSOpenGLPFADepthSize),
+      UInt32(24),
       UInt32(NSOpenGLPFADoubleBuffer),
       UInt32(NSOpenGLPFAOpenGLProfile),
       UInt32(NSOpenGLProfileVersion3_2Core),
