@@ -8,8 +8,8 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <assert.h>
-#include "vendor/tinyobjloader/tiny_obj_loader.h"
 #include <vectorial/vectorial.h>
+#include "vendor/tinyobjloader/tiny_obj_loader.h"
 #include "debug_draw.h"
 #include "app.h"
 
@@ -103,36 +103,6 @@ static const char* get_gl_error_description(GLint err) {
         default:
             return "unknown error code";
     }
-}
-
-static void vec_add(Vec3* out, const Vec3& a, const Vec3& b) {
-  out->x = a.x + b.x;
-  out->y = a.y + b.y;
-  out->z = a.z + b.z;
-}
-
-static void vec_sub(Vec3* out, const Vec3& a, const Vec3& b) {
-  out->x = a.x - b.x;
-  out->y = a.y - b.y;
-  out->z = a.z - b.z;
-}
-
-static void vec_mul(Vec3* out, const Vec3& a, float scalar) {
-  out->x = a.x * scalar;
-  out->y = a.y * scalar;
-  out->z = a.z * scalar;
-}
-
-static void vec_cross(Vec3* out, const Vec3& a, const Vec3& b) {
-  out->x = a.y * b.z - a.z * b.y;
-  out->y = a.z * b.x - a.x - b.z;
-  out->z = a.x * b.y - a.y - b.x;
-}
-
-static void vec_norm(Vec3* out, const Vec3& a) {
-  float len = sqrtf(a.x * a.x + a.y * a.y + a.z * a.z);
-  vec_mul(out, a, 1.0f / len);
-  assert(fabs(1.0f - sqrtf(out->x * out->x + out->y * out->y + out->z * out->z)) < 0.01f);
 }
 
 static void load_file(std::string* out, const char* filename) {
