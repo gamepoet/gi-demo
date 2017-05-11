@@ -514,7 +514,7 @@ static void init(bool reset) {
     s_camera.far = 100.0f;
     s_camera.projection = vectorial::mat4f::perspective(1.3f, 1.7f, s_camera.near, s_camera.far);
 
-    s_light.pos = vectorial::vec3f(0.0f, 5.0f, 5.0f);
+    s_light.pos = vectorial::vec3f(0.0f, -8.0f, 10.0f);
     s_light.color = vectorial::vec3f(1.0f, 1.0f, 1.0f);
     s_light.intensity = 1.0f;
     s_light.range = 15.0f;
