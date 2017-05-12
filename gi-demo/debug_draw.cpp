@@ -78,8 +78,7 @@ void ddraw_point(DDrawVec3Param pos, DDrawVec3Param color) {
   }
 
   s_points[s_point_count] = {
-    pos[0], pos[1], pos[2],
-    color[0], color[1], color[2],
+      pos[0], pos[1], pos[2], color[0], color[1], color[2],
   };
 }
 
@@ -93,13 +92,11 @@ void ddraw_line(DDrawVec3Param pos0, DDrawVec3Param pos1, DDrawVec3Param color0,
   }
 
   s_lines[s_line_count] = {
-    pos0[0], pos0[1], pos0[2],
-    color0[0], color0[1], color0[2],
+      pos0[0], pos0[1], pos0[2], color0[0], color0[1], color0[2],
   };
 
   s_lines[s_line_count + 1] = {
-    pos1[0], pos1[1], pos1[2],
-    color1[0], color1[1], color1[2],
+      pos1[0], pos1[1], pos1[2], color1[0], color1[1], color1[2],
   };
   s_line_count += 2;
 }

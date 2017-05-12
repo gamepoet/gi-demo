@@ -1,24 +1,31 @@
+#include "app.h"
+#include "debug_draw.h"
+#include "vendor/tinyobjloader/tiny_obj_loader.h"
 #include <OpenGL/gl3.h>
-#include <math.h>
-#include <iostream>
+#include <assert.h>
 #include <fstream>
-#include <string>
-#include <unistd.h>
+#include <iostream>
+#include <math.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <stdarg.h>
-#include <assert.h>
+#include <string>
+#include <unistd.h>
 #include <vectorial/vectorial.h>
-#include "vendor/tinyobjloader/tiny_obj_loader.h"
-#include "debug_draw.h"
-#include "app.h"
 
 #define GL_CHECK_ENABLED 1
 
 #if GL_CHECK_ENABLED
-    #define GL_CHECK(expr) do { (expr); GLenum err = glGetError(); if (err != GL_NO_ERROR) { report_error("GL expr failed. expr=`%s` code=%04xh msg=%s\n", #expr, err, get_gl_error_description(err)); } } while (false)
+#define GL_CHECK(expr)                                                                                                 \
+  do {                                                                                                                 \
+    (expr);                                                                                                            \
+    GLenum err = glGetError();                                                                                         \
+    if (err != GL_NO_ERROR) {                                                                                          \
+      report_error("GL expr failed. expr=`%s` code=%04xh msg=%s\n", #expr, err, get_gl_error_description(err));        \
+    }                                                                                                                  \
+  } while (false)
 #else
-    #define GL_CHECK(expr) (expr)
+#define GL_CHECK(expr) (expr)
 #endif
 
 struct Model {
@@ -84,25 +91,25 @@ static GLuint s_debug_draw_program;
 static std::vector<VertexPN> s_debug_normals;
 
 static void report_error(const char* format, ...) {
-    va_list args;
-    va_start(args, format);
-    vprintf(format, args);
-    va_end(args);
+  va_list args;
+  va_start(args, format);
+  vprintf(format, args);
+  va_end(args);
 }
 
 static const char* get_gl_error_description(GLint err) {
-    switch (err) {
-        case GL_INVALID_ENUM:
-            return "invalid enum";
-        case GL_INVALID_VALUE:
-            return "invalid value";
-        case GL_INVALID_OPERATION:
-            return "invalid operation";
-        case GL_OUT_OF_MEMORY:
-            return "out of memory";
-        default:
-            return "unknown error code";
-    }
+  switch (err) {
+    case GL_INVALID_ENUM:
+      return "invalid enum";
+    case GL_INVALID_VALUE:
+      return "invalid value";
+    case GL_INVALID_OPERATION:
+      return "invalid operation";
+    case GL_OUT_OF_MEMORY:
+      return "out of memory";
+    default:
+      return "unknown error code";
+  }
 }
 
 static void load_file(std::string* out, const char* filename) {
@@ -189,7 +196,8 @@ static GLuint load_shader(const char* base_filename) {
   return load_shader(filename_vs.c_str(), filename_fs.c_str());
 }
 
-static vectorial::vec3f normal_from_face(const vectorial::vec3f& p0, const vectorial::vec3f& p1, const vectorial::vec3f& p2) {
+static vectorial::vec3f
+normal_from_face(const vectorial::vec3f& p0, const vectorial::vec3f& p1, const vectorial::vec3f& p2) {
   vectorial::vec3f p01 = p1 - p0;
   vectorial::vec3f p02 = p2 - p0;
   vectorial::vec3f cross = vectorial::cross(p01, p02);
@@ -259,7 +267,6 @@ static void load_model(const char* filename, const char* mtl_dirname, const vect
       nor0.store(&vtx.n.x);
       s_debug_normals.push_back(vtx);
 
-
       vectorial::vec3f color;
       if (materials.size() > 0) {
         const tinyobj::material_t& mat = materials[shape.mesh.material_ids[face]];
@@ -317,14 +324,18 @@ static void model_destroy(Model* model) {
 }
 
 static void load_models() {
-//  char * dir = getcwd(NULL, 0);
-//  std::cout << "Current dir: " << dir << std::endl;
+  // char * dir = getcwd(NULL, 0);
+  // std::cout << "Current dir: " << dir << std::endl;
 
   const char* mtl_dirname = "gi-demo/data/";
-//  load_model("gi-demo/data/floor.obj", mtl_dirname);
-  load_model("gi-demo/data/cornell_box.obj", mtl_dirname, vectorial::mat4f::scale(10.0f) * vectorial::mat4f::axisRotation(1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f)));
-//  s_models.back().transform = vectorial::mat4f::scale(10.0f) * vectorial::mat4f::axisRotation(1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f));
-//  s_models.back().transform = vectorial::mat4f::scale(0.1f) * vectorial::mat4f::axisRotation(1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f));
+  // load_model("gi-demo/data/floor.obj", mtl_dirname);
+  load_model("gi-demo/data/cornell_box.obj",
+             mtl_dirname,
+             vectorial::mat4f::scale(10.0f) *
+                 vectorial::mat4f::axisRotation(1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f)));
+  // s_models.back().transform = vectorial::mat4f::scale(10.0f) * vectorial::mat4f::axisRotation(1.5708f,
+  // vectorial::vec3f(1.0f, 0.0f, 0.0f)); s_models.back().transform = vectorial::mat4f::scale(0.1f) *
+  // vectorial::mat4f::axisRotation(1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f));
 }
 
 static void unload_models() {
@@ -383,7 +394,10 @@ static void bind_constant_mat4(GLuint program, const char* name, const vectorial
   GL_CHECK(glUniformMatrix4fv(uniform_id, 1, GL_FALSE, value_f));
 }
 
-static void bind_constants(GLuint program, const vectorial::mat4f& world, const vectorial::mat4f& view, const vectorial::mat4f& proj) {
+static void bind_constants(GLuint program,
+                           const vectorial::mat4f& world,
+                           const vectorial::mat4f& view,
+                           const vectorial::mat4f& proj) {
   // add a transform to rotation Z up to Y up
   // NOTE: this is applied to the view transform (inverse of the camera world transform)
   vectorial::mat4f makeYUp = vectorial::mat4f::axisRotation(-1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f));
@@ -401,8 +415,9 @@ static void bind_constants(GLuint program, const vectorial::mat4f& world, const 
   for (int index = 0; index < uniform_count; ++index) {
     GLint uniform_size;
     GLenum uniform_type;
-    GL_CHECK(glGetActiveUniform(program, index, uniform_name_max_len, nullptr, &uniform_size, &uniform_type, uniform_name));
-//    printf("Uniform[%d]: '%s'\n", index, uniform_name);
+    GL_CHECK(
+        glGetActiveUniform(program, index, uniform_name_max_len, nullptr, &uniform_size, &uniform_type, uniform_name));
+    // printf("Uniform[%d]: '%s'\n", index, uniform_name);
 
     if (0 == strcmp(uniform_name, "world_view_proj")) {
       bind_constant_mat4(program, "world_view_proj", world_view_proj);
@@ -455,7 +470,8 @@ static void debug_draw_lines(const DDrawVertex* vertices, int vertex_count) {
   // add a transform to rotation Z up to Y up
   // NOTE: this is applied to the view transform (inverse of the camera world transform)
   vectorial::mat4f makeYUp = vectorial::mat4f::axisRotation(-1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f));
-  const vectorial::mat4f world_view = makeYUp * vectorial::inverse(makeCameraTransform(&s_camera)) * s_models.back().transform;
+  const vectorial::mat4f world_view =
+      makeYUp * vectorial::inverse(makeCameraTransform(&s_camera)) * s_models.back().transform;
   const vectorial::mat4f world_view_proj = s_camera.projection * world_view;
   bind_constant_mat4(s_debug_draw_lines_vb, "world_view_proj", world_view_proj);
 
@@ -547,7 +563,7 @@ extern "C" void app_render(float dt) {
     init(false);
   }
   s_time += dt;
-//  float color_val = sinf(s_time);
+  // float color_val = sinf(s_time);
   float color_val = 0.4f;
 
   // compute the camera's orientation
@@ -694,7 +710,7 @@ extern "C" void app_render(float dt) {
     nor[0] = normal.n.x;
     nor[1] = normal.n.y;
     nor[2] = normal.n.z;
-    float col[3] = { 1.0f, 1.0f, 1.0f};
+    float col[3] = {1.0f, 1.0f, 1.0f};
     ddraw_normal(pos, nor, col, 0.5f);
   }
   ddraw_flush();
