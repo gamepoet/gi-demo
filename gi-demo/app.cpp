@@ -28,11 +28,42 @@
 #define GL_CHECK(expr) (expr)
 #endif
 
+#define MAX_CHANNELS 16
+
+enum ChannelSemantic {
+  CHANNEL_SEMANTIC_COLOR,
+  CHANNEL_SEMANTIC_NORMAL,
+  CHANNEL_SEMANTIC_POSITION,
+  CHANNEL_SEMANTIC_TEXCOORD,
+};
+
+enum ChannelType {
+  CHANNEL_TYPE_FLOAT_3,
+  CHANNEL_TYPE_UBYTE_4,
+};
+
+struct VertexChannelDesc {
+  ChannelType type;
+  ChannelSemantic semantic;
+};
+
+struct Mesh {
+  void* indices;
+  void* vertices;
+  VertexChannelDesc channels[MAX_CHANNELS];
+  unsigned index_count;
+  unsigned vertex_count;
+  unsigned channel_count;
+  bool index_size_32_bit;
+};
+
 struct Model {
   vectorial::mat4f transform;
   GLuint ib;
   GLuint vb;
   int tri_count;
+  VertexChannelDesc channels[MAX_CHANNELS];
+  unsigned channel_count;
   bool wireframe;
 };
 
@@ -110,6 +141,50 @@ static const char* get_gl_error_description(GLint err) {
     default:
       return "unknown error code";
   }
+}
+
+static int channel_size(const VertexChannelDesc* channel) {
+  switch (channel->type) {
+    case CHANNEL_TYPE_FLOAT_3:
+      return 12;
+    case CHANNEL_TYPE_UBYTE_4:
+      return 4;
+    default:
+      assert(false && "unknown channel type");
+      return 0;
+  }
+}
+
+static int channel_elements(const VertexChannelDesc* channel) {
+  switch (channel->type) {
+    case CHANNEL_TYPE_FLOAT_3:
+      return 3;
+    case CHANNEL_TYPE_UBYTE_4:
+      return 4;
+    default:
+      assert(false && "unknown channel type");
+      return 0;
+  }
+}
+
+static GLenum to_gl_channel_type(ChannelType type) {
+  switch (type) {
+    case CHANNEL_TYPE_FLOAT_3:
+      return GL_FLOAT;
+    case CHANNEL_TYPE_UBYTE_4:
+      return GL_UNSIGNED_BYTE;
+    default:
+      assert(false && "unknown channel type");
+      return 0;
+  }
+}
+
+static int vertex_stride(const VertexChannelDesc* channels, int channel_count) {
+  int stride = 0;
+  for (int index = 0; index < channel_count; ++index) {
+    stride += channel_size(channels + index);
+  }
+  return stride;
 }
 
 static void load_file(std::string* out, const char* filename) {
@@ -205,7 +280,7 @@ normal_from_face(const vectorial::vec3f& p0, const vectorial::vec3f& p1, const v
   return normal;
 }
 
-static void load_model(const char* filename, const char* mtl_dirname, const vectorial::mat4f& transform) {
+static Mesh* mesh_load(const char* filename, const char* mtl_dirname, const vectorial::mat4f& transform) {
   tinyobj::attrib_t attrib;
   std::vector<tinyobj::shape_t> shapes;
   std::vector<tinyobj::material_t> materials;
@@ -217,12 +292,6 @@ static void load_model(const char* filename, const char* mtl_dirname, const vect
   if (!ret) {
     exit(1);
   }
-
-  Model model;
-  model.ib = 0;
-  model.vb = 0;
-  model.tri_count = 0;
-  model.wireframe = false;
 
   std::vector<uint16_t> indices;
   std::vector<Vertex> vertices;
@@ -296,25 +365,67 @@ static void load_model(const char* filename, const char* mtl_dirname, const vect
     }
   }
 
+  Mesh* mesh = (Mesh*)malloc(sizeof(Mesh));
+  mesh->channels[0] = {CHANNEL_TYPE_FLOAT_3, CHANNEL_SEMANTIC_POSITION};
+  mesh->channels[1] = {CHANNEL_TYPE_FLOAT_3, CHANNEL_SEMANTIC_NORMAL};
+  mesh->channels[2] = {CHANNEL_TYPE_FLOAT_3, CHANNEL_SEMANTIC_COLOR};
+  mesh->index_count = (unsigned)indices.size();
+  mesh->vertex_count = (unsigned)vertices.size();
+  mesh->channel_count = 3;
+  mesh->index_size_32_bit = false;
+
+  const unsigned ib_size = mesh->index_count * sizeof(uint16_t);
+  const unsigned vb_size = mesh->vertex_count * vertex_stride(mesh->channels, mesh->channel_count);
+  mesh->indices = malloc(ib_size);
+  mesh->vertices = malloc(vb_size);
+  memmove(mesh->indices, &indices[0], ib_size);
+  memmove(mesh->vertices, &vertices[0], vb_size);
+
+  return mesh;
+}
+
+static void mesh_destroy(Mesh* mesh) {
+  free(mesh->indices);
+  free(mesh->vertices);
+  free(mesh);
+}
+
+static void model_create(Model* model, const Mesh* mesh) {
+  model->ib = 0;
+  model->vb = 0;
+  model->tri_count = 0;
+  model->wireframe = false;
+  model->channel_count = mesh->channel_count;
+  memmove(model->channels, mesh->channels, mesh->channel_count * sizeof(VertexChannelDesc));
+
   // create the index buffer
-  const uint16_t* ib_data = &indices[0];
-  int ib_size_bytes = (int)indices.size() * sizeof(uint16_t);
-  GL_CHECK(glGenBuffers(1, &model.ib));
-  GL_CHECK(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, model.ib));
-  GL_CHECK(glBufferData(GL_ELEMENT_ARRAY_BUFFER, ib_size_bytes, ib_data, GL_STATIC_DRAW));
+  int ib_size_bytes;
+  if (mesh->index_size_32_bit) {
+    ib_size_bytes = mesh->index_count * sizeof(uint32_t);
+  }
+  else {
+    ib_size_bytes = mesh->index_count * sizeof(uint16_t);
+  }
 
-  const Vertex* vb_data = &vertices[0];
-  int vb_size_bytes = (int)vertices.size() * sizeof(Vertex);
-  GL_CHECK(glGenBuffers(1, &model.vb));
-  GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, model.vb));
-  GL_CHECK(glBufferData(GL_ARRAY_BUFFER, vb_size_bytes, vb_data, GL_STATIC_DRAW));
-
+  GL_CHECK(glGenBuffers(1, &model->ib));
+  GL_CHECK(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, model->ib));
+  GL_CHECK(glBufferData(GL_ELEMENT_ARRAY_BUFFER, ib_size_bytes, mesh->indices, GL_STATIC_DRAW));
   GL_CHECK(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
+
+  int vb_size_bytes = mesh->vertex_count * vertex_stride(mesh->channels, mesh->channel_count);
+  GL_CHECK(glGenBuffers(1, &model->vb));
+  GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, model->vb));
+  GL_CHECK(glBufferData(GL_ARRAY_BUFFER, vb_size_bytes, mesh->vertices, GL_STATIC_DRAW));
   GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, 0));
 
   // finish up the model and save it
-  model.tri_count = (int)indices.size() / 3;
-  model.transform = vectorial::mat4f::identity();
+  model->tri_count = mesh->index_count / 3;
+  model->transform = vectorial::mat4f::identity();
+}
+
+static void model_create(const Mesh* mesh) {
+  Model model;
+  model_create(&model, mesh);
   s_models.push_back(model);
 }
 
@@ -328,14 +439,12 @@ static void load_models() {
   // std::cout << "Current dir: " << dir << std::endl;
 
   const char* mtl_dirname = "gi-demo/data/";
-  // load_model("gi-demo/data/floor.obj", mtl_dirname);
-  load_model("gi-demo/data/cornell_box.obj",
-             mtl_dirname,
-             vectorial::mat4f::scale(10.0f) *
-                 vectorial::mat4f::axisRotation(1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f)));
-  // s_models.back().transform = vectorial::mat4f::scale(10.0f) * vectorial::mat4f::axisRotation(1.5708f,
-  // vectorial::vec3f(1.0f, 0.0f, 0.0f)); s_models.back().transform = vectorial::mat4f::scale(0.1f) *
-  // vectorial::mat4f::axisRotation(1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f));
+  Mesh* mesh = mesh_load("gi-demo/data/cornell_box.obj",
+                         mtl_dirname,
+                         vectorial::mat4f::scale(10.0f) *
+                             vectorial::mat4f::axisRotation(1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f)));
+  model_create(mesh);
+  mesh_destroy(mesh);
 }
 
 static void unload_models() {
@@ -687,29 +796,31 @@ extern "C" void app_render(float dt) {
     GL_CHECK(glUseProgram(program));
     bind_constants(program, model.transform, view, s_camera.projection);
 
-    GL_CHECK(glEnableVertexAttribArray(0));
-    GL_CHECK(glEnableVertexAttribArray(1));
-    GL_CHECK(glEnableVertexAttribArray(2));
+    const unsigned stride = vertex_stride(model.channels, model.channel_count);
     GL_CHECK(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, model.ib));
     GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, model.vb));
-    GL_CHECK(glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), nullptr));
+    size_t offset = 0;
+    for (int index = 0; index < model.channel_count; ++index) {
+      const VertexChannelDesc* channel = model.channels + index;
+      GL_CHECK(glEnableVertexAttribArray(index));
+      GL_CHECK(glVertexAttribPointer(
+          index, channel_elements(channel), to_gl_channel_type(channel->type), GL_FALSE, stride, (void*)offset));
+      offset += channel_size(channel);
+    }
     GL_CHECK(glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, n)));
     GL_CHECK(glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, c)));
     GL_CHECK(glDrawElements(GL_TRIANGLES, model.tri_count * 3, GL_UNSIGNED_SHORT, nullptr));
-    GL_CHECK(glDisableVertexAttribArray(0));
-    GL_CHECK(glDisableVertexAttribArray(1));
-    GL_CHECK(glDisableVertexAttribArray(2));
+
+    GL_CHECK(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
+    GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, 0));
+    for (int index = 0; index < model.channel_count; ++index) {
+      GL_CHECK(glDisableVertexAttribArray(index));
+    }
   }
 
   for (const auto& normal : s_debug_normals) {
-    float pos[3];
-    pos[0] = normal.p.x;
-    pos[1] = normal.p.y;
-    pos[2] = normal.p.z;
-    float nor[3];
-    nor[0] = normal.n.x;
-    nor[1] = normal.n.y;
-    nor[2] = normal.n.z;
+    float pos[3] = {normal.p.x, normal.p.y, normal.p.z};
+    float nor[3] = {normal.n.x, normal.n.y, normal.n.z};
     float col[3] = {1.0f, 1.0f, 1.0f};
     ddraw_normal(pos, nor, col, 0.5f);
   }
