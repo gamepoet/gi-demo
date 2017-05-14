@@ -74,6 +74,16 @@ class AppOpenGLView: NSOpenGLView {
     render()
   }
 
+  override func reshape() {
+    super.reshape();
+
+    let bounds = self.bounds;
+    let context = self.openGLContext!
+    CGLLockContext(context.cglContextObj!);
+    app_resize(Float(bounds.width), Float(bounds.height));
+    CGLUnlockContext(context.cglContextObj!);
+  }
+
   private func render() {
     let context = self.openGLContext!
     CGLLockContext(context.cglContextObj!)

@@ -100,6 +100,9 @@ struct VertexPN {
   Vec3 n;
 };
 
+static float s_window_width;
+static float s_window_height;
+
 static bool s_first_draw = true;
 static float s_time = 0.0f;
 static std::vector<Model> s_models;
@@ -558,6 +561,14 @@ static void bind_constants(GLuint program,
   }
 }
 
+static void camera_set_projection(Camera* cam, float fov_y, float width, float height) {
+  float aspect = 1.7f;
+  if (height > 0.0f) {
+    aspect = width / height;
+  }
+  cam->projection = vectorial::mat4f::perspective(fov_y, aspect, cam->near, cam->far);
+}
+
 static vectorial::mat4f makeCameraTransform(Camera* cam) {
   vectorial::mat4f cameraYaw = vectorial::mat4f::axisRotation(cam->yaw, vectorial::vec3f(0.0f, 0.0f, 1.0f));
   vectorial::mat4f cameraPitch = vectorial::mat4f::axisRotation(cam->pitch, cameraYaw.value.x);
@@ -681,7 +692,7 @@ static void init(bool reset) {
     s_camera.yaw = 0.0f;
     s_camera.near = 0.01f;
     s_camera.far = 100.0f;
-    s_camera.projection = vectorial::mat4f::perspective(1.3f, 1.7f, s_camera.near, s_camera.far);
+    camera_set_projection(&s_camera, 1.3f, s_window_width, s_window_height);
 
     s_light.pos = vectorial::vec3f(0.0f, -8.0f, 10.0f);
     s_light.color = vectorial::vec3f(1.0f, 1.0f, 1.0f);
@@ -822,7 +833,7 @@ extern "C" void app_render(float dt) {
   GL_CHECK(glCullFace(GL_BACK));
 
   // draw all the models
-  draw_models(&s_models[0], s_models.size(), view);
+  draw_models(&s_models[0], (unsigned)s_models.size(), view);
 
   for (const auto& normal : s_debug_normals) {
     float pos[3] = {normal.p.x, normal.p.y, normal.p.z};
@@ -831,4 +842,15 @@ extern "C" void app_render(float dt) {
     ddraw_normal(pos, nor, col, 0.5f);
   }
   ddraw_flush();
+}
+
+extern "C" void app_resize(float width, float height) {
+  if (width == 0 || height == 0) {
+    return;
+  }
+  s_window_width = width;
+  s_window_height = height;
+
+  glViewport(0, 0, (GLsizei)width, (GLsizei)height);
+  camera_set_projection(&s_camera, 1.3f, s_window_width, s_window_height);
 }

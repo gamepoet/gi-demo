@@ -39,6 +39,7 @@ typedef enum AppKeyCode {
 } AppKeyCode;
 
 void app_render(float dt);
+void app_resize(float width, float height);
 
 void app_input_key_down(AppKeyCode key);
 void app_input_key_up(AppKeyCode key);
