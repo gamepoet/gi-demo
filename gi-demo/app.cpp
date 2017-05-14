@@ -622,6 +622,50 @@ static void debug_draw_shutdown() {
   s_debug_draw_points_vb = 0;
 }
 
+static void draw_models(const Model* models, unsigned model_count, const vectorial::mat4f& view) {
+  for (unsigned index = 0; index < model_count; ++index) {
+    const Model& model = models[index];
+
+    if (model.wireframe || s_draw_wireframe) {
+      GL_CHECK(glPolygonMode(GL_FRONT_AND_BACK, GL_LINE));
+    }
+    else {
+      GL_CHECK(glPolygonMode(GL_FRONT_AND_BACK, GL_FILL));
+    }
+
+    GLuint program;
+    if (s_draw_depth) {
+      program = s_program_depth;
+    }
+    else {
+      program = s_program;
+    }
+    GL_CHECK(glUseProgram(program));
+    bind_constants(program, model.transform, view, s_camera.projection);
+
+    const unsigned stride = vertex_stride(model.channels, model.channel_count);
+    GL_CHECK(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, model.ib));
+    GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, model.vb));
+    size_t offset = 0;
+    for (int index = 0; index < model.channel_count; ++index) {
+      const VertexChannelDesc* channel = model.channels + index;
+      GL_CHECK(glEnableVertexAttribArray(index));
+      GL_CHECK(glVertexAttribPointer(
+          index, channel_elements(channel), to_gl_channel_type(channel->type), GL_FALSE, stride, (void*)offset));
+      offset += channel_size(channel);
+    }
+    GL_CHECK(glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, n)));
+    GL_CHECK(glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, c)));
+    GL_CHECK(glDrawElements(GL_TRIANGLES, model.tri_count * 3, GL_UNSIGNED_SHORT, nullptr));
+
+    GL_CHECK(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
+    GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, 0));
+    for (int index = 0; index < model.channel_count; ++index) {
+      GL_CHECK(glDisableVertexAttribArray(index));
+    }
+  }
+}
+
 static void init(bool reset) {
   GL_CHECK(glGenVertexArrays(1, &s_default_vao));
   GL_CHECK(glBindVertexArray(s_default_vao));
@@ -778,45 +822,7 @@ extern "C" void app_render(float dt) {
   GL_CHECK(glCullFace(GL_BACK));
 
   // draw all the models
-  for (const auto& model : s_models) {
-    if (model.wireframe || s_draw_wireframe) {
-      GL_CHECK(glPolygonMode(GL_FRONT_AND_BACK, GL_LINE));
-    }
-    else {
-      GL_CHECK(glPolygonMode(GL_FRONT_AND_BACK, GL_FILL));
-    }
-
-    GLuint program;
-    if (s_draw_depth) {
-      program = s_program_depth;
-    }
-    else {
-      program = s_program;
-    }
-    GL_CHECK(glUseProgram(program));
-    bind_constants(program, model.transform, view, s_camera.projection);
-
-    const unsigned stride = vertex_stride(model.channels, model.channel_count);
-    GL_CHECK(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, model.ib));
-    GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, model.vb));
-    size_t offset = 0;
-    for (int index = 0; index < model.channel_count; ++index) {
-      const VertexChannelDesc* channel = model.channels + index;
-      GL_CHECK(glEnableVertexAttribArray(index));
-      GL_CHECK(glVertexAttribPointer(
-          index, channel_elements(channel), to_gl_channel_type(channel->type), GL_FALSE, stride, (void*)offset));
-      offset += channel_size(channel);
-    }
-    GL_CHECK(glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, n)));
-    GL_CHECK(glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, c)));
-    GL_CHECK(glDrawElements(GL_TRIANGLES, model.tri_count * 3, GL_UNSIGNED_SHORT, nullptr));
-
-    GL_CHECK(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
-    GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, 0));
-    for (int index = 0; index < model.channel_count; ++index) {
-      GL_CHECK(glDisableVertexAttribArray(index));
-    }
-  }
+  draw_models(&s_models[0], s_models.size(), view);
 
   for (const auto& normal : s_debug_normals) {
     float pos[3] = {normal.p.x, normal.p.y, normal.p.z};
