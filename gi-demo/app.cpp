@@ -100,6 +100,14 @@ struct VertexPN {
   Vec3 n;
 };
 
+struct LightmapTriangle {
+  vectorial::vec2f positions[3];
+  vectorial::vec2f uvs[3];
+  float width;
+  float height;
+  int mesh_tri_index;
+};
+
 static float s_window_width;
 static float s_window_height;
 
@@ -116,6 +124,11 @@ static bool s_draw_depth = false;
 static GLuint s_default_vao;
 static GLuint s_program;
 static GLuint s_program_depth;
+
+static GLuint s_lightmap_pack_program;
+static GLuint s_draw_texture_program;
+
+static GLuint s_lightmap_tex_id;
 
 static bool s_keyStatus[APP_KEY_CODE_COUNT];
 
@@ -283,6 +296,237 @@ normal_from_face(const vectorial::vec3f& p0, const vectorial::vec3f& p1, const v
   return normal;
 }
 
+static bool lightmap_project_triangles(std::vector<LightmapTriangle>& triangles, const Mesh* mesh) {
+  // find the channel with the positions
+  unsigned position_channel = 0xffffffffU;
+  unsigned offset = 0;
+  for (unsigned index = 0; index < mesh->channel_count; ++index) {
+    if (mesh->channels[index].semantic == CHANNEL_SEMANTIC_POSITION) {
+      position_channel = index;
+      break;
+    }
+    offset += channel_size(mesh->channels + index);
+  }
+  if (position_channel == 0xffffffffU) {
+    return false;
+  }
+
+  if (mesh->channels[position_channel].type != CHANNEL_TYPE_FLOAT_3) {
+    return false;
+  }
+
+  triangles.reserve(mesh->index_count / 3);
+
+  const unsigned stride = vertex_stride(mesh->channels, mesh->channel_count);
+  for (unsigned tri_index0 = 0; tri_index0 < mesh->index_count; tri_index0 += 3) {
+    const uint16_t* indices = (const uint16_t*)mesh->indices + tri_index0;
+    const uint16_t index0 = indices[0];
+    const uint16_t index1 = indices[1];
+    const uint16_t index2 = indices[2];
+    const float* pos_data0 = (const float*)((char*)mesh->vertices + offset + (stride * index0));
+    const float* pos_data1 = (const float*)((char*)mesh->vertices + offset + (stride * index1));
+    const float* pos_data2 = (const float*)((char*)mesh->vertices + offset + (stride * index2));
+
+    vectorial::vec3f positions[3];
+    positions[0].load(pos_data0);
+    positions[1].load(pos_data1);
+    positions[2].load(pos_data2);
+
+    // find the longest edge
+    vectorial::vec3f edges[3];
+    edges[0] = positions[1] - positions[0];
+    edges[1] = positions[2] - positions[1];
+    edges[2] = positions[0] - positions[2];
+    float lengths[3];
+    lengths[0] = vectorial::length(edges[0]);
+    lengths[1] = vectorial::length(edges[1]);
+    lengths[2] = vectorial::length(edges[2]);
+    int longest_edge_index;
+    if (lengths[0] > lengths[1] && lengths[0] > lengths[2]) {
+      longest_edge_index = 0;
+    }
+    else if (lengths[1] > lengths[0] && lengths[1] > lengths[2]) {
+      longest_edge_index = 1;
+    }
+    else {
+      longest_edge_index = 2;
+    }
+
+    int sorted_indices[3];
+    sorted_indices[0] = longest_edge_index;
+    sorted_indices[1] = (longest_edge_index + 1) % 3;
+    sorted_indices[2] = (longest_edge_index + 2) % 3;
+
+    // assuming the longest edge is on the x axis, find the height of the triangle using Heron's formula
+    //  - a = {longest edge}
+    //  - s = (a+b+c)/2
+    //  - A = sqrt(s(s-a)(s-b)(s-c))
+    //  - A = 0.5ah
+    // => h = A/(0.5a)
+    // const float a = lengths[sorted_indices[0]];
+    // const float b = lengths[sorted_indices[1]];
+    // const float c = lengths[sorted_indices[2]];
+    // const float s = (a + b + c) * 0.5f;
+    // const float area = sqrtf(s * (s - a) * (s - b) * (s - c));
+    // const float h = area / (0.5 * a);
+
+    // project the triangle to an XY plane
+    vectorial::vec2f projected[3];
+    projected[0] = vectorial::vec2f::zero();
+    projected[1] = vectorial::vec2f(lengths[longest_edge_index], 0.0f);
+
+    // using the dot product, derive the projected length of the third edge
+    // dp = |a||b|cos(theta)
+    const vectorial::vec3f edge_a = vectorial::normalize(positions[sorted_indices[1]] - positions[sorted_indices[0]]);
+    const vectorial::vec3f edge_c = vectorial::normalize(positions[sorted_indices[2]] - positions[sorted_indices[0]]);
+    const float cos_ac = vectorial::dot(edge_a, edge_c);
+    const float sin_ac = sqrtf(1.0f - (cos_ac * cos_ac));
+    projected[2] = vectorial::vec2f(lengths[sorted_indices[2]] * cos_ac, lengths[sorted_indices[2]] * sin_ac);
+
+    // assuming the longest edge is on the x axis, find the height of the triangle using Heron's formula
+    //  - a = {longest edge}
+    //  - s = (a+b+c)/2
+    //  - A = sqrt(s(s-a)(s-b)(s-c))
+    //  - A = 0.5ah
+    // => h = A/(0.5a)
+    const float a = lengths[sorted_indices[0]];
+    const float b = lengths[sorted_indices[1]];
+    const float c = lengths[sorted_indices[2]];
+    const float s = (a + b + c) * 0.5f;
+    const float area = sqrtf(s * (s - a) * (s - b) * (s - c));
+    const float h = area / (0.5 * a);
+
+    LightmapTriangle tri;
+    tri.positions[0] = projected[0];
+    tri.positions[1] = projected[1];
+    tri.positions[2] = projected[2];
+    tri.width = lengths[sorted_indices[0]];
+    tri.height = h;
+    tri.mesh_tri_index = tri_index0 / 3;
+    triangles.push_back(tri);
+  }
+
+  // reverse sort the triangles by height
+  std::sort(triangles.begin(), triangles.end(), [](const LightmapTriangle& a, const LightmapTriangle& b) {
+    return a.height > b.height;
+  });
+
+  return true;
+}
+
+static void lightmap_pack_texture(std::vector<LightmapTriangle>& triangles, int tex_width, int tex_height) {
+  // const size_t texel_count = tex_width * tex_height;
+  // std::vector<bool> used(texel_count, false);
+
+  const vectorial::vec2f vtx_scale(2.0f / tex_width, 2.0f / tex_height);
+  const vectorial::vec2f vtx_offset(-1.0f, -1.0f);
+
+  GLuint framebuf_id;
+  GL_CHECK(glGenFramebuffers(1, &framebuf_id));
+  GL_CHECK(glBindFramebuffer(GL_FRAMEBUFFER, framebuf_id));
+
+  GL_CHECK(glGenTextures(1, &s_lightmap_tex_id));
+  GLuint tex_id = s_lightmap_tex_id;
+  GL_CHECK(glBindTexture(GL_TEXTURE_2D, tex_id));
+  GL_CHECK(glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, tex_width, tex_height, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr));
+  GL_CHECK(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST));
+  GL_CHECK(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST));
+
+  GL_CHECK(glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex_id, 0));
+  GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0};
+  GL_CHECK(glDrawBuffers(1, draw_buffers));
+
+  GLenum framebuf_status;
+  GL_CHECK(framebuf_status = glCheckFramebufferStatus(GL_FRAMEBUFFER));
+  if (framebuf_status != GL_FRAMEBUFFER_COMPLETE) {
+    printf("framebuf status not complete: %d\n", framebuf_status);
+    exit(1);
+  }
+
+  GL_CHECK(glViewport(0, 0, tex_width, tex_height));
+  GL_CHECK(glUseProgram(s_lightmap_pack_program));
+
+  GLuint vb;
+  GL_CHECK(glGenBuffers(1, &vb));
+  GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, vb));
+  GL_CHECK(glEnableVertexAttribArray(0));
+  GL_CHECK(glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr));
+
+  GL_CHECK(glClearColor(0.0f, 0.0f, 0.0f, 0.0f));
+  GL_CHECK(glClear(GL_COLOR_BUFFER_BIT));
+
+  const int padding = 2;
+  bool flip = false;
+  float dp_prev = 1.0f;
+  int row_height = -1.0f;
+  int u_top = -2;
+  int u_bottom = -2;
+  int v = 0;
+  for (LightmapTriangle& tri : triangles) {
+    int tri_width = (int)(tri.width + 0.5f);
+    int tri_height = (int)(tri.height + 0.5f);
+    if (row_height < 0) {
+      row_height = tri_height;
+    }
+
+    // place the triangle at a point where either the base starts 2px from the previous top pt or the top starts 2px
+    // from the previous base pt (whichever is farther)
+    vectorial::vec2f vec_10 = vectorial::normalize(tri.positions[0] - tri.positions[1]);
+    vectorial::vec2f vec_12 = vectorial::normalize(tri.positions[2] - tri.positions[1]);
+    const float dp = vectorial::dot(vec_12, vec_10);
+    int u;
+    if (dp < dp_prev) {
+      // offset from the base
+      u = u_bottom + padding;
+    }
+    else {
+      // offset from the top
+      u = u_top + padding;
+    }
+
+    // check if this will wrap us around the end of the buffer
+    if (u + tri_width > tex_width) {
+      v += row_height;
+      row_height = tri_height;
+    }
+
+    vectorial::vec2f uv_offset(u, v);
+    vectorial::vec2f uv_pos0 = (tri.positions[0] + uv_offset);
+    vectorial::vec2f uv_pos1 = (tri.positions[1] + uv_offset);
+    vectorial::vec2f uv_pos2 = (tri.positions[2] + uv_offset);
+    if (flip) {
+      uv_pos0 = vectorial::vec2f(uv_pos0.x(), tri_height - uv_pos0.y());
+      uv_pos1 = vectorial::vec2f(uv_pos1.x(), tri_height - uv_pos1.y());
+      uv_pos2 = vectorial::vec2f(uv_pos2.x(), tri_height - uv_pos2.y());
+    }
+    uv_pos0 = (uv_pos0 * vtx_scale) + vtx_offset;
+    uv_pos1 = (uv_pos1 * vtx_scale) + vtx_offset;
+    uv_pos2 = (uv_pos2 * vtx_scale) + vtx_offset;
+
+    // fill the VB with the new triangle
+    float positions[6];
+    uv_pos2.store(positions);
+    uv_pos1.store(positions + 2);
+    uv_pos0.store(positions + 4);
+    GL_CHECK(glBufferData(GL_ARRAY_BUFFER, 6 * sizeof(float), positions, GL_STATIC_DRAW));
+
+    // draw the triangle into the buffer
+    GL_CHECK(glDrawArrays(GL_TRIANGLES, 0, 3));
+
+    u_bottom = (tri.positions[1] + uv_offset).x();
+    u_top = (tri.positions[2] + uv_offset).x();
+    dp_prev = dp;
+    flip = !flip;
+  }
+
+  GL_CHECK(glDisableVertexAttribArray(0));
+  GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, 0));
+  GL_CHECK(glDeleteBuffers(1, &vb));
+  GL_CHECK(glUseProgram(0));
+  GL_CHECK(glBindFramebuffer(GL_FRAMEBUFFER, 0));
+  GL_CHECK(glDeleteFramebuffers(1, &framebuf_id));
+}
+
 static Mesh* mesh_load(const char* filename, const char* mtl_dirname, const vectorial::mat4f& transform) {
   tinyobj::attrib_t attrib;
   std::vector<tinyobj::shape_t> shapes;
@@ -437,6 +681,64 @@ static void model_destroy(Model* model) {
   GL_CHECK(glDeleteBuffers(1, &model->vb));
 }
 
+static void draw_debug_texture(GLuint tex_id, float pos_x, float pos_y, float width, float height) {
+  float vb_data[24];
+  vb_data[0] = pos_x;
+  vb_data[1] = pos_y;
+  vb_data[2] = 0.0f;
+  vb_data[3] = 0.0f;
+
+  vb_data[4] = pos_x + width;
+  vb_data[5] = pos_y;
+  vb_data[6] = 1.0f;
+  vb_data[7] = 0.0f;
+
+  vb_data[8] = pos_x + width;
+  vb_data[9] = pos_y + height;
+  vb_data[10] = 1.0f;
+  vb_data[11] = 1.0f;
+
+  vb_data[12] = pos_x;
+  vb_data[13] = pos_y;
+  vb_data[14] = 0.0f;
+  vb_data[15] = 0.0f;
+
+  vb_data[16] = pos_x + width;
+  vb_data[17] = pos_y + height;
+  vb_data[18] = 1.0f;
+  vb_data[19] = 1.0f;
+
+  vb_data[20] = pos_x;
+  vb_data[21] = pos_y + height;
+  vb_data[22] = 0.0f;
+  vb_data[23] = 1.0f;
+
+  GLuint vb;
+  GL_CHECK(glGenBuffers(1, &vb));
+  GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, vb));
+  GL_CHECK(glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 24, vb_data, GL_STATIC_DRAW));
+
+  GL_CHECK(glEnableVertexAttribArray(0));
+  GL_CHECK(glEnableVertexAttribArray(1));
+  GL_CHECK(glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), nullptr));
+  GL_CHECK(glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float))));
+
+  GL_CHECK(glActiveTexture(GL_TEXTURE0));
+  GL_CHECK(glBindTexture(GL_TEXTURE_2D, s_lightmap_tex_id));
+
+  GL_CHECK(glDisable(GL_DEPTH_TEST));
+  GL_CHECK(glUseProgram(s_draw_texture_program));
+
+  GL_CHECK(glDrawArrays(GL_TRIANGLES, 0, 6));
+
+  GL_CHECK(glUseProgram(0));
+  GL_CHECK(glEnable(GL_DEPTH_TEST));
+  GL_CHECK(glEnableVertexAttribArray(1));
+  GL_CHECK(glEnableVertexAttribArray(0));
+  GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, 0));
+  GL_CHECK(glDeleteBuffers(1, &vb));
+}
+
 static void load_models() {
   // char * dir = getcwd(NULL, 0);
   // std::cout << "Current dir: " << dir << std::endl;
@@ -446,6 +748,12 @@ static void load_models() {
                          mtl_dirname,
                          vectorial::mat4f::scale(10.0f) *
                              vectorial::mat4f::axisRotation(1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f)));
+
+  std::vector<LightmapTriangle> lightmap_triangles;
+  if (lightmap_project_triangles(lightmap_triangles, mesh)) {
+    lightmap_pack_texture(lightmap_triangles, 512, 512);
+  }
+
   model_create(mesh);
   mesh_destroy(mesh);
 }
@@ -460,11 +768,15 @@ static void unload_models() {
 static void load_shaders() {
   s_program = load_shader("gi-demo/data/shaders/lit");
   s_program_depth = load_shader("gi-demo/data/shaders/lit.vs.glsl", "gi-demo/data/shaders/depth.fs.glsl");
+  s_lightmap_pack_program = load_shader("gi-demo/data/shaders/lightmap_pack");
+  s_draw_texture_program = load_shader("gi-demo/data/shaders/debug_texture");
 }
 
 static void unload_shaders() {
+  GL_CHECK(glDeleteProgram(s_lightmap_pack_program));
   GL_CHECK(glDeleteProgram(s_program_depth));
   GL_CHECK(glDeleteProgram(s_program));
+  s_lightmap_pack_program = 0;
   s_program_depth = 0;
   s_program = 0;
 }
@@ -579,7 +891,7 @@ static void debug_draw_points(const DDrawVertex* vertices, int vertex_count) {
 }
 
 static void debug_draw_lines(const DDrawVertex* vertices, int vertex_count) {
-  GL_CHECK(glUseProgram(s_debug_draw_lines_vb));
+  GL_CHECK(glUseProgram(s_debug_draw_program));
   GL_CHECK(glEnableVertexAttribArray(0));
   GL_CHECK(glEnableVertexAttribArray(1));
   GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, s_debug_draw_lines_vb));
@@ -683,8 +995,8 @@ static void init(bool reset) {
 
   debug_draw_init();
 
-  load_models();
   load_shaders();
+  load_models();
 
   if (!reset) {
     s_camera.pos = vectorial::vec3f(0.0f, -20.0f, 10.0f);
@@ -702,8 +1014,8 @@ static void init(bool reset) {
 }
 
 static void destroy() {
-  unload_shaders();
   unload_models();
+  unload_shaders();
 
   debug_draw_shutdown();
 
@@ -827,6 +1139,8 @@ extern "C" void app_render(float dt) {
   GL_CHECK(glClearColor(color_val, color_val, color_val, 0.0f));
   GL_CHECK(glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
 
+  GL_CHECK(glViewport(0, 0, (GLsizei)s_window_width, (GLsizei)s_window_height));
+
   GL_CHECK(glEnable(GL_DEPTH_TEST));
   GL_CHECK(glDepthFunc(GL_LESS));
   GL_CHECK(glEnable(GL_CULL_FACE));
@@ -842,6 +1156,9 @@ extern "C" void app_render(float dt) {
     ddraw_normal(pos, nor, col, 0.5f);
   }
   ddraw_flush();
+
+  // draw the lightmap texture
+  draw_debug_texture(s_lightmap_tex_id, -0.8f, -0.8f, 1.6f, 1.6f);
 }
 
 extern "C" void app_resize(float width, float height) {
@@ -851,6 +1168,6 @@ extern "C" void app_resize(float width, float height) {
   s_window_width = width;
   s_window_height = height;
 
-  glViewport(0, 0, (GLsizei)width, (GLsizei)height);
+  GL_CHECK(glViewport(0, 0, (GLsizei)width, (GLsizei)height));
   camera_set_projection(&s_camera, 1.3f, s_window_width, s_window_height);
 }
