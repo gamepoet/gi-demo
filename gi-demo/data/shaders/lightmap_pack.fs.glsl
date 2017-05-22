@@ -1,7 +1,9 @@
 #version 330 core
 
+uniform vec4 u_color;
+
 out vec3 color;
 
 void main() {
-  color = vec3(1.0f, 0.0f, 0.0f);
+  color = u_color.rgb;
 }

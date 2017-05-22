@@ -61,6 +61,7 @@ struct Model {
   vectorial::mat4f transform;
   GLuint ib;
   GLuint vb;
+  GLuint lightmap_vb;
   int tri_count;
   VertexChannelDesc channels[MAX_CHANNELS];
   unsigned channel_count;
@@ -106,7 +107,24 @@ struct LightmapTriangle {
   float width;
   float height;
   int mesh_tri_index;
+  int projected_edge_index;
 };
+
+static uint32_t s_brewer_colors[] = {
+    0xa6cee3ff,
+    0x1f78b4ff,
+    0xb2df8aff,
+    0x33a02cff,
+    0xfb9a99ff,
+    0xe31a1cff,
+    0xfdbf6fff,
+    0xff7f00ff,
+    0xcab2d6ff,
+    0x6a3d9aff,
+    0xffff99ff,
+    0xb15928ff,
+};
+#define BREWER_COLOR_COUNT 12
 
 static float s_window_width;
 static float s_window_height;
@@ -120,10 +138,13 @@ static Light s_light;
 // debug
 static bool s_draw_wireframe = false;
 static bool s_draw_depth = false;
+static bool s_draw_lightmap = false;
+static bool s_vis_lightmap = false;
 
 static GLuint s_default_vao;
 static GLuint s_program;
 static GLuint s_program_depth;
+static GLuint s_program_lightmap_only;
 
 static GLuint s_lightmap_pack_program;
 static GLuint s_draw_texture_program;
@@ -201,6 +222,14 @@ static int vertex_stride(const VertexChannelDesc* channels, int channel_count) {
     stride += channel_size(channels + index);
   }
   return stride;
+}
+
+static vectorial::vec4f color_rgba_to_float4(uint32_t in) {
+  float r = (float)((in >> 24) & 0xff) / 255.0f;
+  float g = (float)((in >> 16) & 0xff) / 255.0f;
+  float b = (float)((in >> 8) & 0xff) / 255.0f;
+  float a = (float)((in >> 0) & 0xff) / 255.0f;
+  return vectorial::vec4f(r, g, b, a);
 }
 
 static void load_file(std::string* out, const char* filename) {
@@ -294,6 +323,108 @@ normal_from_face(const vectorial::vec3f& p0, const vectorial::vec3f& p1, const v
   vectorial::vec3f cross = vectorial::cross(p01, p02);
   vectorial::vec3f normal = vectorial::normalize(cross);
   return normal;
+}
+
+static void bind_constant_float(GLuint program, const char* name, float value) {
+  // TODO: cache the uniform id
+  GLuint uniform_id;
+  GL_CHECK(uniform_id = glGetUniformLocation(program, name));
+  GL_CHECK(glUniform1fv(uniform_id, 1, &value));
+}
+
+static void bind_constant_vec2(GLuint program, const char* name, const vectorial::vec2f& value) {
+  float value_f[2];
+  value.store(value_f);
+
+  // TODO: cache the uniform id
+  GLuint uniform_id;
+  GL_CHECK(uniform_id = glGetUniformLocation(program, name));
+  GL_CHECK(glUniform2fv(uniform_id, 1, value_f));
+}
+
+static void bind_constant_vec3(GLuint program, const char* name, const vectorial::vec3f& value) {
+  float value_f[3];
+  value.store(value_f);
+
+  // TODO: cache the uniform id
+  GLuint uniform_id;
+  GL_CHECK(uniform_id = glGetUniformLocation(program, name));
+  GL_CHECK(glUniform3fv(uniform_id, 1, value_f));
+}
+
+static void bind_constant_vec4(GLuint program, const char* name, const vectorial::vec4f& value) {
+  float value_f[4];
+  value.store(value_f);
+
+  // TODO: cache the uniform id
+  GLuint uniform_id;
+  GL_CHECK(uniform_id = glGetUniformLocation(program, name));
+  GL_CHECK(glUniform4fv(uniform_id, 1, value_f));
+}
+
+static void bind_constant_mat4(GLuint program, const char* name, const vectorial::mat4f& value) {
+  float value_f[16];
+  value.store(value_f);
+
+  // TODO: cache the uniform id
+  GLuint uniform_id;
+  GL_CHECK(uniform_id = glGetUniformLocation(program, name));
+  GL_CHECK(glUniformMatrix4fv(uniform_id, 1, GL_FALSE, value_f));
+}
+
+static void bind_constants(GLuint program,
+                           const vectorial::mat4f& world,
+                           const vectorial::mat4f& view,
+                           const vectorial::mat4f& proj) {
+  // add a transform to rotation Z up to Y up
+  // NOTE: this is applied to the view transform (inverse of the camera world transform)
+  vectorial::mat4f makeYUp = vectorial::mat4f::axisRotation(-1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f));
+  const vectorial::mat4f world_view = makeYUp * view * world;
+  const vectorial::mat4f world_view_proj = proj * world_view;
+
+  const vectorial::vec3f light_pos_vs = vectorial::transformPoint((makeYUp * view), s_light.pos);
+
+  // loop over the program's uniforms
+  GLint uniform_count;
+  GLint uniform_name_max_len;
+  GL_CHECK(glGetProgramiv(program, GL_ACTIVE_UNIFORMS, &uniform_count));
+  GL_CHECK(glGetProgramiv(program, GL_ACTIVE_UNIFORM_MAX_LENGTH, &uniform_name_max_len));
+  char* uniform_name = (char*)alloca(uniform_name_max_len);
+  for (int index = 0; index < uniform_count; ++index) {
+    GLint uniform_size;
+    GLenum uniform_type;
+    GL_CHECK(
+        glGetActiveUniform(program, index, uniform_name_max_len, nullptr, &uniform_size, &uniform_type, uniform_name));
+    // printf("Uniform[%d]: '%s'\n", index, uniform_name);
+
+    if (0 == strcmp(uniform_name, "world_view_proj")) {
+      bind_constant_mat4(program, "world_view_proj", world_view_proj);
+    }
+    else if (0 == strcmp(uniform_name, "world_view")) {
+      bind_constant_mat4(program, "world_view", world_view);
+    }
+    else if (0 == strcmp(uniform_name, "light_pos_vs")) {
+      bind_constant_vec3(program, "light_pos_vs", light_pos_vs);
+    }
+    else if (0 == strcmp(uniform_name, "light_color")) {
+      bind_constant_vec3(program, "light_color", s_light.color);
+    }
+    else if (0 == strcmp(uniform_name, "light_intensity")) {
+      bind_constant_float(program, "light_intensity", s_light.intensity);
+    }
+    else if (0 == strcmp(uniform_name, "light_range")) {
+      bind_constant_float(program, "light_range", s_light.range);
+    }
+    else if (0 == strcmp(uniform_name, "camera_near_far")) {
+      bind_constant_vec2(program, "camera_near_far", vectorial::vec2f(s_camera.near, s_camera.far));
+    }
+    else if (0 == strncmp(uniform_name, "gl_", 3)) {
+      // ignore
+    }
+    else {
+      printf("WARN: Unknown uniform: '%s'\n", uniform_name);
+    }
+  }
 }
 
 static bool lightmap_project_triangles(std::vector<LightmapTriangle>& triangles, const Mesh* mesh) {
@@ -403,13 +534,9 @@ static bool lightmap_project_triangles(std::vector<LightmapTriangle>& triangles,
     tri.width = lengths[sorted_indices[0]];
     tri.height = h;
     tri.mesh_tri_index = tri_index0 / 3;
+    tri.projected_edge_index = longest_edge_index;
     triangles.push_back(tri);
   }
-
-  // reverse sort the triangles by height
-  std::sort(triangles.begin(), triangles.end(), [](const LightmapTriangle& a, const LightmapTriangle& b) {
-    return a.height > b.height;
-  });
 
   return true;
 }
@@ -418,8 +545,14 @@ static void lightmap_pack_texture(std::vector<LightmapTriangle>& triangles, int 
   // const size_t texel_count = tex_width * tex_height;
   // std::vector<bool> used(texel_count, false);
 
-  const vectorial::vec2f vtx_scale(2.0f / tex_width, 2.0f / tex_height);
+  const vectorial::vec2f tex_scale(1.0f / tex_width, 1.0f / tex_height);
+  const vectorial::vec2f vtx_scale = tex_scale * 2.0f;
   const vectorial::vec2f vtx_offset(-1.0f, -1.0f);
+
+  // reverse sort the triangles by height
+  std::sort(triangles.begin(), triangles.end(), [](const LightmapTriangle& a, const LightmapTriangle& b) {
+    return a.height > b.height;
+  });
 
   GLuint framebuf_id;
   GL_CHECK(glGenFramebuffers(1, &framebuf_id));
@@ -462,12 +595,18 @@ static void lightmap_pack_texture(std::vector<LightmapTriangle>& triangles, int 
   int u_top = -2;
   int u_bottom = -2;
   int v = 0;
+  int color_index = 0;
   for (LightmapTriangle& tri : triangles) {
     int tri_width = (int)(tri.width + 0.5f);
     int tri_height = (int)(tri.height + 0.5f);
     if (row_height < 0) {
       row_height = tri_height;
     }
+
+    const uint32_t color_uint32 = s_brewer_colors[color_index];
+    color_index = (color_index + 1) % BREWER_COLOR_COUNT;
+    vectorial::vec4f color = color_rgba_to_float4(color_uint32);
+    bind_constant_vec4(s_lightmap_pack_program, "u_color", color);
 
     // place the triangle at a point where either the base starts 2px from the previous top pt or the top starts 2px
     // from the previous base pt (whichever is farther)
@@ -499,6 +638,11 @@ static void lightmap_pack_texture(std::vector<LightmapTriangle>& triangles, int 
       uv_pos1 = vectorial::vec2f(uv_pos1.x(), tri_height - uv_pos1.y());
       uv_pos2 = vectorial::vec2f(uv_pos2.x(), tri_height - uv_pos2.y());
     }
+
+    tri.uvs[0] = uv_pos0 * tex_scale;
+    tri.uvs[1] = uv_pos1 * tex_scale;
+    tri.uvs[2] = uv_pos2 * tex_scale;
+
     uv_pos0 = (uv_pos0 * vtx_scale) + vtx_offset;
     uv_pos1 = (uv_pos1 * vtx_scale) + vtx_offset;
     uv_pos2 = (uv_pos2 * vtx_scale) + vtx_offset;
@@ -525,6 +669,38 @@ static void lightmap_pack_texture(std::vector<LightmapTriangle>& triangles, int 
   GL_CHECK(glUseProgram(0));
   GL_CHECK(glBindFramebuffer(GL_FRAMEBUFFER, 0));
   GL_CHECK(glDeleteFramebuffers(1, &framebuf_id));
+
+  // sort the triangles by mesh order
+  std::sort(triangles.begin(), triangles.end(), [](const LightmapTriangle& a, const LightmapTriangle& b) {
+    return a.mesh_tri_index < b.mesh_tri_index;
+  });
+}
+
+static GLuint lightmap_create_vb(const std::vector<LightmapTriangle>& lightmap_triangles) {
+  const size_t tri_count = lightmap_triangles.size();
+  const size_t uv_count = tri_count * 3;
+  const size_t vb_size_bytes = uv_count * 2 * sizeof(float);
+  float* uv_data = (float*)malloc(vb_size_bytes);
+
+  int uv_index = 0;
+  for (const LightmapTriangle& tri : lightmap_triangles) {
+    int out_index0 = tri.projected_edge_index;
+    int out_index1 = (tri.projected_edge_index + 1) % 3;
+    int out_index2 = (tri.projected_edge_index + 2) % 3;
+    tri.uvs[out_index0].store((uv_data + (2 * uv_index + 0)));
+    tri.uvs[out_index1].store((uv_data + (2 * uv_index + 2)));
+    tri.uvs[out_index2].store((uv_data + (2 * uv_index + 4)));
+    uv_index += 3;
+  }
+
+  GLuint vb;
+  GL_CHECK(glGenBuffers(1, &vb));
+  GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, vb));
+  GL_CHECK(glBufferData(GL_ARRAY_BUFFER, uv_count * 2 * sizeof(float), uv_data, GL_STATIC_DRAW));
+  GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, 0));
+
+  free(uv_data);
+  return vb;
 }
 
 static Mesh* mesh_load(const char* filename, const char* mtl_dirname, const vectorial::mat4f& transform) {
@@ -637,9 +813,10 @@ static void mesh_destroy(Mesh* mesh) {
   free(mesh);
 }
 
-static void model_create(Model* model, const Mesh* mesh) {
+static void model_create(Model* model, const Mesh* mesh, GLuint lightmap_vb) {
   model->ib = 0;
   model->vb = 0;
+  model->lightmap_vb = lightmap_vb;
   model->tri_count = 0;
   model->wireframe = false;
   model->channel_count = mesh->channel_count;
@@ -670,9 +847,9 @@ static void model_create(Model* model, const Mesh* mesh) {
   model->transform = vectorial::mat4f::identity();
 }
 
-static void model_create(const Mesh* mesh) {
+static void model_create(const Mesh* mesh, GLuint lightmap_vb) {
   Model model;
-  model_create(&model, mesh);
+  model_create(&model, mesh, lightmap_vb);
   s_models.push_back(model);
 }
 
@@ -724,7 +901,7 @@ static void draw_debug_texture(GLuint tex_id, float pos_x, float pos_y, float wi
   GL_CHECK(glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float))));
 
   GL_CHECK(glActiveTexture(GL_TEXTURE0));
-  GL_CHECK(glBindTexture(GL_TEXTURE_2D, s_lightmap_tex_id));
+  GL_CHECK(glBindTexture(GL_TEXTURE_2D, tex_id));
 
   GL_CHECK(glDisable(GL_DEPTH_TEST));
   GL_CHECK(glUseProgram(s_draw_texture_program));
@@ -750,11 +927,13 @@ static void load_models() {
                              vectorial::mat4f::axisRotation(1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f)));
 
   std::vector<LightmapTriangle> lightmap_triangles;
+  GLuint lightmap_vb = 0;
   if (lightmap_project_triangles(lightmap_triangles, mesh)) {
     lightmap_pack_texture(lightmap_triangles, 512, 512);
+    lightmap_vb = lightmap_create_vb(lightmap_triangles);
   }
 
-  model_create(mesh);
+  model_create(mesh, lightmap_vb);
   mesh_destroy(mesh);
 }
 
@@ -767,6 +946,7 @@ static void unload_models() {
 
 static void load_shaders() {
   s_program = load_shader("gi-demo/data/shaders/lit");
+  s_program_lightmap_only = load_shader("gi-demo/data/shaders/lightmap_only");
   s_program_depth = load_shader("gi-demo/data/shaders/lit.vs.glsl", "gi-demo/data/shaders/depth.fs.glsl");
   s_lightmap_pack_program = load_shader("gi-demo/data/shaders/lightmap_pack");
   s_draw_texture_program = load_shader("gi-demo/data/shaders/debug_texture");
@@ -779,98 +959,6 @@ static void unload_shaders() {
   s_lightmap_pack_program = 0;
   s_program_depth = 0;
   s_program = 0;
-}
-
-static void bind_constant_float(GLuint program, const char* name, float value) {
-  // TODO: cache the uniform id
-  GLuint uniform_id;
-  GL_CHECK(uniform_id = glGetUniformLocation(program, name));
-  GL_CHECK(glUniform1fv(uniform_id, 1, &value));
-}
-
-static void bind_constant_vec2(GLuint program, const char* name, const vectorial::vec2f& value) {
-  float value_f[2];
-  value.store(value_f);
-
-  // TODO: cache the uniform id
-  GLuint uniform_id;
-  GL_CHECK(uniform_id = glGetUniformLocation(program, name));
-  GL_CHECK(glUniform2fv(uniform_id, 1, value_f));
-}
-
-static void bind_constant_vec3(GLuint program, const char* name, const vectorial::vec3f& value) {
-  float value_f[3];
-  value.store(value_f);
-
-  // TODO: cache the uniform id
-  GLuint uniform_id;
-  GL_CHECK(uniform_id = glGetUniformLocation(program, name));
-  GL_CHECK(glUniform3fv(uniform_id, 1, value_f));
-}
-
-static void bind_constant_mat4(GLuint program, const char* name, const vectorial::mat4f& value) {
-  float value_f[16];
-  value.store(value_f);
-
-  // TODO: cache the uniform id
-  GLuint uniform_id;
-  GL_CHECK(uniform_id = glGetUniformLocation(program, name));
-  GL_CHECK(glUniformMatrix4fv(uniform_id, 1, GL_FALSE, value_f));
-}
-
-static void bind_constants(GLuint program,
-                           const vectorial::mat4f& world,
-                           const vectorial::mat4f& view,
-                           const vectorial::mat4f& proj) {
-  // add a transform to rotation Z up to Y up
-  // NOTE: this is applied to the view transform (inverse of the camera world transform)
-  vectorial::mat4f makeYUp = vectorial::mat4f::axisRotation(-1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f));
-  const vectorial::mat4f world_view = makeYUp * view * world;
-  const vectorial::mat4f world_view_proj = proj * world_view;
-
-  const vectorial::vec3f light_pos_vs = vectorial::transformPoint((makeYUp * view), s_light.pos);
-
-  // loop over the program's uniforms
-  GLint uniform_count;
-  GLint uniform_name_max_len;
-  GL_CHECK(glGetProgramiv(program, GL_ACTIVE_UNIFORMS, &uniform_count));
-  GL_CHECK(glGetProgramiv(program, GL_ACTIVE_UNIFORM_MAX_LENGTH, &uniform_name_max_len));
-  char* uniform_name = (char*)alloca(uniform_name_max_len);
-  for (int index = 0; index < uniform_count; ++index) {
-    GLint uniform_size;
-    GLenum uniform_type;
-    GL_CHECK(
-        glGetActiveUniform(program, index, uniform_name_max_len, nullptr, &uniform_size, &uniform_type, uniform_name));
-    // printf("Uniform[%d]: '%s'\n", index, uniform_name);
-
-    if (0 == strcmp(uniform_name, "world_view_proj")) {
-      bind_constant_mat4(program, "world_view_proj", world_view_proj);
-    }
-    else if (0 == strcmp(uniform_name, "world_view")) {
-      bind_constant_mat4(program, "world_view", world_view);
-    }
-    else if (0 == strcmp(uniform_name, "light_pos_vs")) {
-      bind_constant_vec3(program, "light_pos_vs", light_pos_vs);
-    }
-    else if (0 == strcmp(uniform_name, "light_color")) {
-      bind_constant_vec3(program, "light_color", s_light.color);
-    }
-    else if (0 == strcmp(uniform_name, "light_intensity")) {
-      bind_constant_float(program, "light_intensity", s_light.intensity);
-    }
-    else if (0 == strcmp(uniform_name, "light_range")) {
-      bind_constant_float(program, "light_range", s_light.range);
-    }
-    else if (0 == strcmp(uniform_name, "camera_near_far")) {
-      bind_constant_vec2(program, "camera_near_far", vectorial::vec2f(s_camera.near, s_camera.far));
-    }
-    else if (0 == strncmp(uniform_name, "gl_", 3)) {
-      // ignore
-    }
-    else {
-      printf("WARN: Unknown uniform: '%s'\n", uniform_name);
-    }
-  }
 }
 
 static void camera_set_projection(Camera* cam, float fov_y, float width, float height) {
@@ -960,11 +1048,18 @@ static void draw_models(const Model* models, unsigned model_count, const vectori
     if (s_draw_depth) {
       program = s_program_depth;
     }
+    else if (s_draw_lightmap) {
+      program = s_program_lightmap_only;
+    }
     else {
       program = s_program;
     }
     GL_CHECK(glUseProgram(program));
     bind_constants(program, model.transform, view, s_camera.projection);
+
+    // bind the lightmap texture
+    GL_CHECK(glActiveTexture(GL_TEXTURE0));
+    GL_CHECK(glBindTexture(GL_TEXTURE_2D, s_lightmap_tex_id));
 
     const unsigned stride = vertex_stride(model.channels, model.channel_count);
     GL_CHECK(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, model.ib));
@@ -979,8 +1074,18 @@ static void draw_models(const Model* models, unsigned model_count, const vectori
     }
     GL_CHECK(glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, n)));
     GL_CHECK(glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, c)));
+
+    if (model.lightmap_vb) {
+      GL_CHECK(glEnableVertexAttribArray(15));
+      GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, model.lightmap_vb));
+      GL_CHECK(glVertexAttribPointer(15, 2, GL_FLOAT, GL_FALSE, 0, nullptr));
+    }
+
     GL_CHECK(glDrawElements(GL_TRIANGLES, model.tri_count * 3, GL_UNSIGNED_SHORT, nullptr));
 
+    if (model.lightmap_vb) {
+      GL_CHECK(glDisableVertexAttribArray(15));
+    }
     GL_CHECK(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
     GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, 0));
     for (int index = 0; index < model.channel_count; ++index) {
@@ -1065,6 +1170,12 @@ extern "C" void app_render(float dt) {
   }
   if (s_keyStatus[APP_KEY_CODE_F2]) {
     s_draw_depth = !s_draw_depth;
+  }
+  if (s_keyStatus[APP_KEY_CODE_F3]) {
+    s_draw_lightmap = !s_draw_lightmap;
+  }
+  if (s_keyStatus[APP_KEY_CODE_F5]) {
+    s_vis_lightmap = !s_vis_lightmap;
   }
 
   if (s_keyStatus[APP_KEY_CODE_LCONTROL]) {
@@ -1157,8 +1268,10 @@ extern "C" void app_render(float dt) {
   }
   ddraw_flush();
 
-  // draw the lightmap texture
-  draw_debug_texture(s_lightmap_tex_id, -0.8f, -0.8f, 1.6f, 1.6f);
+  if (s_vis_lightmap) {
+    // draw the lightmap texture
+    draw_debug_texture(s_lightmap_tex_id, -0.8f, -0.8f, 1.6f, 1.6f);
+  }
 }
 
 extern "C" void app_resize(float width, float height) {
