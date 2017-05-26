@@ -920,8 +920,8 @@ static void load_models() {
   // char * dir = getcwd(NULL, 0);
   // std::cout << "Current dir: " << dir << std::endl;
 
-  const char* mtl_dirname = "gi-demo/data/";
-  Mesh* mesh = mesh_load("gi-demo/data/cornell_box.obj",
+  const char* mtl_dirname = "data/";
+  Mesh* mesh = mesh_load("data/cornell_box.obj",
                          mtl_dirname,
                          vectorial::mat4f::scale(10.0f) *
                              vectorial::mat4f::axisRotation(1.5708f, vectorial::vec3f(1.0f, 0.0f, 0.0f)));
@@ -945,11 +945,11 @@ static void unload_models() {
 }
 
 static void load_shaders() {
-  s_program = load_shader("gi-demo/data/shaders/lit");
-  s_program_lightmap_only = load_shader("gi-demo/data/shaders/lightmap_only");
-  s_program_depth = load_shader("gi-demo/data/shaders/lit.vs.glsl", "gi-demo/data/shaders/depth.fs.glsl");
-  s_lightmap_pack_program = load_shader("gi-demo/data/shaders/lightmap_pack");
-  s_draw_texture_program = load_shader("gi-demo/data/shaders/debug_texture");
+  s_program = load_shader("data/shaders/lit");
+  s_program_lightmap_only = load_shader("data/shaders/lightmap_only");
+  s_program_depth = load_shader("data/shaders/lit.vs.glsl", "data/shaders/depth.fs.glsl");
+  s_lightmap_pack_program = load_shader("data/shaders/lightmap_pack");
+  s_draw_texture_program = load_shader("data/shaders/debug_texture");
 }
 
 static void unload_shaders() {
@@ -1018,7 +1018,7 @@ static void debug_draw_init() {
   GL_CHECK(glBufferData(GL_ARRAY_BUFFER, settings.max_lines * sizeof(DDrawVertex), nullptr, GL_DYNAMIC_DRAW));
   GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, 0));
 
-  s_debug_draw_program = load_shader("gi-demo/data/shaders/debug_draw");
+  s_debug_draw_program = load_shader("data/shaders/debug_draw");
 
   ddraw_init(&settings);
 }

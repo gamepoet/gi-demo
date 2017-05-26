@@ -1,0 +1,4 @@
+#!/bin/bash
+cd `dirname "$0"`/../build/
+
+xcodebuild -project gi-demo.xcodeproj -scheme gi-demo build
