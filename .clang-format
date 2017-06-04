@@ -28,6 +28,7 @@ ColumnLimit: 120
 IndentCaseLabels: true
 IndentWidth: 2
 MaxEmptyLinesToKeep: 1
+NamespaceIndentation: All
 PointerAlignment: Left
 ReflowComments: true
 SortIncludes: true

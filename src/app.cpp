@@ -30,6 +30,11 @@
 
 #define MAX_CHANNELS 16
 
+enum KeyStatus {
+  KEY_STATUS_DOWN = 0x01,
+  KEY_STATUS_EDGE = 0x02,
+};
+
 enum ChannelSemantic {
   CHANNEL_SEMANTIC_COLOR,
   CHANNEL_SEMANTIC_NORMAL,
@@ -140,6 +145,7 @@ static bool s_draw_wireframe = false;
 static bool s_draw_depth = false;
 static bool s_draw_lightmap = false;
 static bool s_vis_lightmap = false;
+static int s_num_lightmap_tris = -1;
 
 static GLuint s_default_vao;
 static GLuint s_program;
@@ -151,7 +157,7 @@ static GLuint s_draw_texture_program;
 
 static GLuint s_lightmap_tex_id;
 
-static bool s_keyStatus[APP_KEY_CODE_COUNT];
+static int s_key_status[APP_KEY_CODE_COUNT];
 
 static GLuint s_debug_draw_points_vb;
 static GLuint s_debug_draw_lines_vb;
@@ -596,7 +602,13 @@ static void lightmap_pack_texture(std::vector<LightmapTriangle>& triangles, int 
   int u_bottom = -2;
   int v = 0;
   int color_index = 0;
+  int tri_index = 0;
   for (LightmapTriangle& tri : triangles) {
+    if (s_num_lightmap_tris >= 0 && tri_index >= s_num_lightmap_tris) {
+      break;
+    }
+    ++tri_index;
+
     int tri_width = (int)(tri.width + 0.5f);
     int tri_height = (int)(tri.height + 0.5f);
     if (row_height < 0) {
@@ -1129,12 +1141,24 @@ static void destroy() {
   GL_CHECK(glDeleteVertexArrays(1, &s_default_vao));
 }
 
+static bool is_key_down(AppKeyCode key) {
+  return 0 != (s_key_status[key] & KEY_STATUS_DOWN);
+}
+static bool is_key_edge_down(AppKeyCode key) {
+  return (KEY_STATUS_DOWN | KEY_STATUS_EDGE) == (s_key_status[key] & (KEY_STATUS_DOWN | KEY_STATUS_EDGE));
+}
+static void clear_key_edge_states() {
+  for (int index = 0; index < APP_KEY_CODE_COUNT; ++index) {
+    s_key_status[index] &= ~KEY_STATUS_EDGE;
+  }
+}
+
 extern "C" void app_input_key_down(AppKeyCode key) {
-  s_keyStatus[key] = true;
+  s_key_status[key] = KEY_STATUS_DOWN | KEY_STATUS_EDGE;
 }
 
 extern "C" void app_input_key_up(AppKeyCode key) {
-  s_keyStatus[key] = false;
+  s_key_status[key] = KEY_STATUS_EDGE;
 }
 
 extern "C" void app_render(float dt) {
@@ -1156,89 +1180,98 @@ extern "C" void app_render(float dt) {
   // apply inputs
   float rotateAngle = 3.14159 * dt;
   float moveDistance = 50.0f * dt;
-  if (s_keyStatus[APP_KEY_CODE_LSHIFT] || s_keyStatus[APP_KEY_CODE_RSHIFT]) {
+  if (is_key_down(APP_KEY_CODE_LSHIFT) || is_key_down(APP_KEY_CODE_RSHIFT)) {
     rotateAngle *= 2.0f;
     moveDistance *= 5.0f;
   }
 
-  if (s_keyStatus[APP_KEY_CODE_R]) {
+  if (is_key_edge_down(APP_KEY_CODE_R)) {
     destroy();
     init(true);
   }
-  if (s_keyStatus[APP_KEY_CODE_F1]) {
+  if (is_key_edge_down(APP_KEY_CODE_F1)) {
     s_draw_wireframe = !s_draw_wireframe;
   }
-  if (s_keyStatus[APP_KEY_CODE_F2]) {
+  if (is_key_edge_down(APP_KEY_CODE_F2)) {
     s_draw_depth = !s_draw_depth;
   }
-  if (s_keyStatus[APP_KEY_CODE_F3]) {
+  if (is_key_edge_down(APP_KEY_CODE_F3)) {
     s_draw_lightmap = !s_draw_lightmap;
   }
-  if (s_keyStatus[APP_KEY_CODE_F5]) {
+  if (is_key_edge_down(APP_KEY_CODE_F5)) {
     s_vis_lightmap = !s_vis_lightmap;
   }
+  if (is_key_edge_down(APP_KEY_CODE_MINUS)) {
+    --s_num_lightmap_tris;
+    if (s_num_lightmap_tris < -1) {
+      s_num_lightmap_tris = -1;
+    }
+  }
+  if (is_key_edge_down(APP_KEY_CODE_EQUAL)) {
+    ++s_num_lightmap_tris;
+  }
 
-  if (s_keyStatus[APP_KEY_CODE_LCONTROL]) {
-    if (s_keyStatus[APP_KEY_CODE_A]) {
+  if (is_key_down(APP_KEY_CODE_LCONTROL)) {
+    if (is_key_down(APP_KEY_CODE_A)) {
       s_light.pos -= vectorial::vec3f(1.0f, 0.0f, 0.0f) * moveDistance;
     }
-    if (s_keyStatus[APP_KEY_CODE_D]) {
+    if (is_key_down(APP_KEY_CODE_D)) {
       s_light.pos += vectorial::vec3f(1.0f, 0.0f, 0.0f) * moveDistance;
     }
-    if (s_keyStatus[APP_KEY_CODE_S]) {
+    if (is_key_down(APP_KEY_CODE_S)) {
       s_light.pos -= vectorial::vec3f(0.0f, 1.0f, 0.0f) * moveDistance;
     }
-    if (s_keyStatus[APP_KEY_CODE_W]) {
+    if (is_key_down(APP_KEY_CODE_W)) {
       s_light.pos += vectorial::vec3f(0.0f, 1.0f, 0.0f) * moveDistance;
     }
-    if (s_keyStatus[APP_KEY_CODE_Q]) {
+    if (is_key_down(APP_KEY_CODE_Q)) {
       s_light.pos -= vectorial::vec3f(0.0f, 0.0f, 1.0f) * moveDistance;
     }
-    if (s_keyStatus[APP_KEY_CODE_E]) {
+    if (is_key_down(APP_KEY_CODE_E)) {
       s_light.pos += vectorial::vec3f(0.0f, 0.0f, 1.0f) * moveDistance;
     }
-    if (s_keyStatus[APP_KEY_CODE_UP]) {
+    if (is_key_down(APP_KEY_CODE_UP)) {
       s_light.intensity += 5.0f * dt;
     }
-    if (s_keyStatus[APP_KEY_CODE_DOWN]) {
+    if (is_key_down(APP_KEY_CODE_DOWN)) {
       s_light.intensity -= 5.0f * dt;
     }
-    if (s_keyStatus[APP_KEY_CODE_LEFT]) {
+    if (is_key_down(APP_KEY_CODE_LEFT)) {
       s_light.range -= 5.0f * dt;
     }
-    if (s_keyStatus[APP_KEY_CODE_RIGHT]) {
+    if (is_key_down(APP_KEY_CODE_RIGHT)) {
       s_light.range += 5.0f * dt;
     }
   }
   else {
-    if (s_keyStatus[APP_KEY_CODE_A]) {
+    if (is_key_down(APP_KEY_CODE_A)) {
       s_camera.pos -= right * moveDistance;
     }
-    if (s_keyStatus[APP_KEY_CODE_D]) {
+    if (is_key_down(APP_KEY_CODE_D)) {
       s_camera.pos += right * moveDistance;
     }
-    if (s_keyStatus[APP_KEY_CODE_E]) {
+    if (is_key_down(APP_KEY_CODE_E)) {
       s_camera.pos += up * moveDistance;
     }
-    if (s_keyStatus[APP_KEY_CODE_Q]) {
+    if (is_key_down(APP_KEY_CODE_Q)) {
       s_camera.pos -= up * moveDistance;
     }
-    if (s_keyStatus[APP_KEY_CODE_W]) {
+    if (is_key_down(APP_KEY_CODE_W)) {
       s_camera.pos += fwd * moveDistance;
     }
-    if (s_keyStatus[APP_KEY_CODE_S]) {
+    if (is_key_down(APP_KEY_CODE_S)) {
       s_camera.pos -= fwd * moveDistance;
     }
-    if (s_keyStatus[APP_KEY_CODE_LEFT]) {
+    if (is_key_down(APP_KEY_CODE_LEFT)) {
       s_camera.yaw += rotateAngle;
     }
-    if (s_keyStatus[APP_KEY_CODE_RIGHT]) {
+    if (is_key_down(APP_KEY_CODE_RIGHT)) {
       s_camera.yaw -= rotateAngle;
     }
-    if (s_keyStatus[APP_KEY_CODE_UP]) {
+    if (is_key_down(APP_KEY_CODE_UP)) {
       s_camera.pitch += rotateAngle;
     }
-    if (s_keyStatus[APP_KEY_CODE_DOWN]) {
+    if (is_key_down(APP_KEY_CODE_DOWN)) {
       s_camera.pitch -= rotateAngle;
     }
   }
@@ -1272,6 +1305,8 @@ extern "C" void app_render(float dt) {
     // draw the lightmap texture
     draw_debug_texture(s_lightmap_tex_id, -0.8f, -0.8f, 1.6f, 1.6f);
   }
+
+  clear_key_edge_states();
 }
 
 extern "C" void app_resize(float width, float height) {

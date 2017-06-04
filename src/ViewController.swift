@@ -112,5 +112,7 @@ class ViewController: NSViewController {
     kVK_RightControl: APP_KEY_CODE_RCONTROL,
     kVK_Shift: APP_KEY_CODE_LSHIFT,
     kVK_RightShift: APP_KEY_CODE_RSHIFT,
+    kVK_ANSI_Minus: APP_KEY_CODE_MINUS,
+    kVK_ANSI_Equal: APP_KEY_CODE_EQUAL,
   ]
 }
