@@ -164,6 +164,13 @@ static GLuint s_debug_draw_lines_vb;
 static GLuint s_debug_draw_program;
 static std::vector<VertexPN> s_debug_normals;
 
+static int32_t min(int32_t a, int32_t b) {
+  if (a < b) {
+    return a;
+  }
+  return b;
+}
+
 static void report_error(const char* format, ...) {
   va_list args;
   va_start(args, format);
@@ -433,6 +440,10 @@ static void bind_constants(GLuint program,
   }
 }
 
+static vectorial::vec2f snap_to_half(const vectorial::vec2f& pos) {
+  return vectorial::vec2f(truncf(pos.x()) + 0.5f, truncf(pos.y()) + 0.5f);
+}
+
 static bool lightmap_project_triangles(std::vector<LightmapTriangle>& triangles, const Mesh* mesh) {
   // find the channel with the positions
   unsigned position_channel = 0xffffffffU;
@@ -593,63 +604,90 @@ static void lightmap_pack_texture(std::vector<LightmapTriangle>& triangles, int 
 
   GL_CHECK(glClearColor(0.0f, 0.0f, 0.0f, 0.0f));
   GL_CHECK(glClear(GL_COLOR_BUFFER_BIT));
+  GL_CHECK(glDisable(GL_DEPTH_TEST));
+  GL_CHECK(glDisable(GL_CULL_FACE));
 
   const int padding = 2;
   bool flip = false;
   float dp_prev = 1.0f;
   int row_height = -1.0f;
-  int u_top = -2;
-  int u_bottom = -2;
+  int u_top = 0;
+  int u_bottom = 0;
   int v = 0;
   int color_index = 0;
-  int tri_index = 0;
-  for (LightmapTriangle& tri : triangles) {
-    if (s_num_lightmap_tris >= 0 && tri_index >= s_num_lightmap_tris) {
-      break;
-    }
-    ++tri_index;
+  const int tri_count = s_num_lightmap_tris < 0 ? triangles.size() : min(triangles.size(), s_num_lightmap_tris);
+  for (int tri_index = 0; tri_index < tri_count; ++tri_index) {
+    LightmapTriangle& tri = triangles[tri_index];
 
-    int tri_width = (int)(tri.width + 0.5f);
-    int tri_height = (int)(tri.height + 0.5f);
-    if (row_height < 0) {
-      row_height = tri_height;
-    }
+    // extract the triangle positions
+    vectorial::vec2f pos0 = tri.positions[0];
+    vectorial::vec2f pos1 = tri.positions[1];
+    vectorial::vec2f pos2 = tri.positions[2];
 
-    const uint32_t color_uint32 = s_brewer_colors[color_index];
-    color_index = (color_index + 1) % BREWER_COLOR_COUNT;
-    vectorial::vec4f color = color_rgba_to_float4(color_uint32);
-    bind_constant_vec4(s_lightmap_pack_program, "u_color", color);
-
-    // place the triangle at a point where either the base starts 2px from the previous top pt or the top starts 2px
-    // from the previous base pt (whichever is farther)
-    vectorial::vec2f vec_10 = vectorial::normalize(tri.positions[0] - tri.positions[1]);
-    vectorial::vec2f vec_12 = vectorial::normalize(tri.positions[2] - tri.positions[1]);
+    // determine the relationship between the current triangle's angle and the previous one. if the current angle is
+    // smaller, the next triangle can fit starting from the top of the previous, otherwise it must start from the bottom
+    // of the previous
+    const vectorial::vec2f vec_10 = vectorial::normalize(pos0 - pos1);
+    const vectorial::vec2f vec_12 = vectorial::normalize(pos2 - pos1);
     const float dp = vectorial::dot(vec_12, vec_10);
     int u;
     if (dp < dp_prev) {
       // offset from the base
-      u = u_bottom + padding;
+      u = u_bottom;
     }
     else {
       // offset from the top
-      u = u_top + padding;
+      u = u_top;
     }
 
-    // check if this will wrap us around the end of the buffer
-    if (u + tri_width > tex_width) {
-      v += row_height;
+    // compute the rectangular bounds (rounded to nearest integer)
+    const int32_t tri_width = (int32_t)(pos1.x() + 0.5f);
+    const int32_t tri_height = (int32_t)(pos2.y() + 0.5f);
+
+    // if this is the first iteration, set the initial row_height;
+    if (tri_index == 0) {
       row_height = tri_height;
     }
 
-    vectorial::vec2f uv_offset(u, v);
-    vectorial::vec2f uv_pos0 = (tri.positions[0] + uv_offset);
-    vectorial::vec2f uv_pos1 = (tri.positions[1] + uv_offset);
-    vectorial::vec2f uv_pos2 = (tri.positions[2] + uv_offset);
-    if (flip) {
-      uv_pos0 = vectorial::vec2f(uv_pos0.x(), tri_height - uv_pos0.y());
-      uv_pos1 = vectorial::vec2f(uv_pos1.x(), tri_height - uv_pos1.y());
-      uv_pos2 = vectorial::vec2f(uv_pos2.x(), tri_height - uv_pos2.y());
+    // if adding this will wrap us around the end of the buffer, start a new row
+    if (u + tri_width > tex_width) {
+      u = 0;
+      v += row_height + padding;
+      row_height = tri_height;
+      flip = false;
     }
+
+    // mirror the triangle over the diagonal
+    if (flip) {
+      vectorial::vec2f old_pos0 = pos0;
+      vectorial::vec2f old_pos1 = pos1;
+      vectorial::vec2f old_pos2 = pos2;
+
+      pos0 = old_pos1;
+      pos1 = old_pos0;
+      const float pos2_x_offset = (old_pos2.x() - old_pos0.x());
+      pos2 = vectorial::vec2f(old_pos1.x() - pos2_x_offset, -old_pos2.y());
+
+      // add an offset to account for being attached to the top of the row
+      vectorial::vec2f offset_y(0.0f, row_height);
+      pos0 += offset_y;
+      pos1 += offset_y;
+      pos2 += offset_y;
+    }
+
+    // snap the verts to texel centers
+    pos0 = snap_to_half(pos0);
+    pos1 = snap_to_half(pos1);
+    pos2 = snap_to_half(pos2);
+
+    // place the triangle in the correct spot on the map
+    vectorial::vec2f uv_offset(u, v);
+    vectorial::vec2f uv_pos0;
+    vectorial::vec2f uv_pos1;
+    vectorial::vec2f uv_pos2;
+    uv_pos0 = pos0 + uv_offset;
+    uv_pos1 = pos1 + uv_offset;
+    uv_pos2 = pos2 + uv_offset;
 
     tri.uvs[0] = uv_pos0 * tex_scale;
     tri.uvs[1] = uv_pos1 * tex_scale;
@@ -666,11 +704,22 @@ static void lightmap_pack_texture(std::vector<LightmapTriangle>& triangles, int 
     uv_pos0.store(positions + 4);
     GL_CHECK(glBufferData(GL_ARRAY_BUFFER, 6 * sizeof(float), positions, GL_STATIC_DRAW));
 
+    // choose a color
+    const uint32_t color_uint32 = s_brewer_colors[color_index];
+    color_index = (color_index + 1) % BREWER_COLOR_COUNT;
+    const vectorial::vec4f color = color_rgba_to_float4(color_uint32);
+    bind_constant_vec4(s_lightmap_pack_program, "u_color", color);
+
     // draw the triangle into the buffer
     GL_CHECK(glDrawArrays(GL_TRIANGLES, 0, 3));
 
-    u_bottom = (tri.positions[1] + uv_offset).x();
-    u_top = (tri.positions[2] + uv_offset).x();
+    if (flip) {
+      u_bottom = (pos0 + uv_offset).x() + padding;
+    }
+    else {
+      u_bottom = (pos1 + uv_offset).x() + padding;
+    }
+    u_top = (pos2 + uv_offset).x() + padding;
     dp_prev = dp;
     flip = !flip;
   }
@@ -941,7 +990,7 @@ static void load_models() {
   std::vector<LightmapTriangle> lightmap_triangles;
   GLuint lightmap_vb = 0;
   if (lightmap_project_triangles(lightmap_triangles, mesh)) {
-    lightmap_pack_texture(lightmap_triangles, 512, 512);
+    lightmap_pack_texture(lightmap_triangles, 128, 128);
     lightmap_vb = lightmap_create_vb(lightmap_triangles);
   }
 
